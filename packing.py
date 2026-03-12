@@ -1,19 +1,32 @@
 """
-3D Bin Packing – Extreme Point Method with column-preference scoring.
+3D Bin Packing – Extreme Point Method with Contact-Maximisation scoring.
 
-Rules enforced:
-  • UPRIGHT ONLY  – declared height always stays as Z (boxes never tipped).
-  • ROTATABLE     – if rotatable=False the box can only sit in its original
-                    L×W orientation (no 90° horizontal spin).
-  • STACKABLE     – if stackable=False nothing may be placed on top of it.
-  • STACKING      – the scoring function strongly prefers positions that are
-                    directly above an existing box ("continue a column")
-                    before opening a new floor position.
+Key ideas
+─────────
+1. CONTACT SCORE   – for every (position, rotation) candidate we compute how
+                     much face area is in contact with truck walls or already-
+                     placed boxes.  The placement with the MOST contact wins.
+                     This minimises air gaps and hugs boxes together tightly.
+
+2. RICH EXTREME POINTS – after each placement we add 3 classic EPs PLUS all
+                     XY combinations that arise from intersecting the new
+                     box's edges with existing boxes at every height level.
+                     This gives the algorithm far more candidate positions to
+                     evaluate, so it can "slide" boxes into gaps.
+
+3. ORDERING        – boxes are sorted height-descending first (tall items
+                     placed before short ones so short boxes can fill gaps on
+                     top), then base-area descending within the same height.
+
+4. CONSTRAINTS kept from previous version:
+   • UPRIGHT ONLY   – declared height is always Z; boxes never tipped.
+   • ROTATABLE flag – if False, only the original L×W orientation is tried.
+   • STACKABLE flag – if False, nothing may rest on top of that box.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import List, Tuple
+from dataclasses import dataclass
+from typing import List, Tuple, Set
 
 
 # ── Data class ────────────────────────────────────────────────────────────────
@@ -23,15 +36,14 @@ class PackBox:
     uid:        str
     package_id: int
     name:       str
-    length:     float   # declared length  (horizontal, never becomes Z)
-    width:      float   # declared width   (horizontal, never becomes Z)
-    height:     float   # declared height  (always Z)
+    length:     float
+    width:      float
+    height:     float
     weight:     float
     color:      str
-    stackable:  bool    # False → nothing may rest on top of this box
-    rotatable:  bool    # False → cannot rotate 90° in the horizontal plane
+    stackable:  bool
+    rotatable:  bool
 
-    # Filled after placement
     x: float = 0.0
     y: float = 0.0
     z: float = 0.0
@@ -42,31 +54,20 @@ class PackBox:
 
     def to_dict(self):
         return {
-            "uid":        self.uid,
-            "package_id": self.package_id,
-            "name":       self.name,
-            "length":     self.length,
-            "width":      self.width,
-            "height":     self.height,
-            "weight":     self.weight,
-            "color":      self.color,
-            "stackable":  self.stackable,
-            "rotatable":  self.rotatable,
+            "uid": self.uid, "package_id": self.package_id,
+            "name": self.name, "length": self.length,
+            "width": self.width, "height": self.height,
+            "weight": self.weight, "color": self.color,
+            "stackable": self.stackable, "rotatable": self.rotatable,
             "x": self.x, "y": self.y, "z": self.z,
-            "placed_l":   self.placed_l,
-            "placed_w":   self.placed_w,
-            "placed_h":   self.placed_h,
-            "placed":     self.placed,
+            "placed_l": self.placed_l, "placed_w": self.placed_w,
+            "placed_h": self.placed_h, "placed": self.placed,
         }
 
 
-# ── Horizontal rotations (height never changes) ───────────────────────────────
+# ── Rotations ─────────────────────────────────────────────────────────────────
 
-def get_rotations(l: float, w: float, rotatable: bool) -> List[Tuple[float, float]]:
-    """
-    Returns the list of valid (length, width) orientations for a box.
-    If rotatable=False, only the original orientation is returned.
-    """
+def _rotations(l: float, w: float, rotatable: bool) -> List[Tuple[float, float]]:
     if not rotatable or abs(l - w) < 1e-9:
         return [(l, w)]
     return [(l, w), (w, l)]
@@ -74,168 +75,194 @@ def get_rotations(l: float, w: float, rotatable: bool) -> List[Tuple[float, floa
 
 # ── Geometry ──────────────────────────────────────────────────────────────────
 
-def _overlaps_xy(ax, ay, al, aw, bx, by, bl, bw) -> bool:
-    return not (ax + al <= bx or bx + bl <= ax or
-                ay + aw <= by or by + bw <= ay)
+EPS = 1e-9
 
+def _overlap_1d(a0, a1, b0, b1) -> float:
+    """Overlap length of two intervals; 0 if they don't overlap."""
+    return max(0.0, min(a1, b1) - max(a0, b0))
 
 def _overlaps_3d(ax, ay, az, al, aw, ah,
                  bx, by, bz, bl, bw, bh) -> bool:
-    return not (
-        ax + al <= bx or bx + bl <= ax or
-        ay + aw <= by or by + bw <= ay or
-        az + ah <= bz or bz + bh <= az
+    return (
+        ax + al > bx + EPS and bx + bl > ax + EPS and
+        ay + aw > by + EPS and by + bw > ay + EPS and
+        az + ah > bz + EPS and bz + bh > az + EPS
     )
 
+def _overlaps_xy(ax, ay, al, aw, bx, by, bl, bw) -> bool:
+    return ax + al > bx + EPS and bx + bl > ax + EPS and \
+           ay + aw > by + EPS and by + bw > ay + EPS
 
-def _is_on_top_of(px, py, pz, placed: List[PackBox]) -> bool:
+
+# ── Contact-maximisation score ────────────────────────────────────────────────
+
+def _contact_score(px, py, pz, rl, rw, h,
+                   truck_l, truck_w, truck_h,
+                   placed: List[PackBox]) -> float:
     """
-    True if point (px,py,pz) sits exactly on the top face of some
-    already-placed box (i.e. this is a legitimate stacking position,
-    not a floating position).
-    The extreme-point method only generates z-level EPs from box tops,
-    so this check also guards against numeric-drift false-positives.
+    Returns total face area in contact with truck walls or placed boxes.
+    Higher = better packing (fewer air gaps).
+    We return the NEGATIVE so that callers can use min() to pick the best.
     """
-    if pz < 1e-9:
-        return False   # on the truck floor – not stacking
-    EPS = 1e-6
+    contact = 0.0
+
+    # ── Contact with the 5 closed truck surfaces ──────────────────────────────
+    if pz < EPS:                          contact += rl * rw        # floor
+    if px < EPS:                          contact += rw * h         # left wall
+    if py < EPS:                          contact += rl * h         # rear wall
+    if abs(px + rl - truck_l) < EPS:     contact += rw * h         # right wall
+    if abs(py + rw - truck_w) < EPS:     contact += rl * h         # front wall
+    # (no ceiling contact – truck is open-top for loading)
+
+    # ── Contact with placed boxes ─────────────────────────────────────────────
     for p in placed:
-        if abs(p.z + p.placed_h - pz) < EPS:
-            # the candidate sits at the top surface of p;
-            # check that the x,y start matches (exact EP match)
-            if abs(p.x - px) < EPS and abs(p.y - py) < EPS:
-                return True
-    return False
+        pl, pw, ph = p.placed_l, p.placed_w, p.placed_h
 
+        # bottom face of new resting on top face of p
+        if abs(pz - (p.z + ph)) < EPS:
+            ox = _overlap_1d(px, px+rl, p.x, p.x+pl)
+            oy = _overlap_1d(py, py+rw, p.y, p.y+pw)
+            contact += ox * oy
+
+        # top face of new touching bottom face of p  (rare but valid EP)
+        if abs(pz + h - p.z) < EPS:
+            ox = _overlap_1d(px, px+rl, p.x, p.x+pl)
+            oy = _overlap_1d(py, py+rw, p.y, p.y+pw)
+            contact += ox * oy
+
+        # X-facing side contacts
+        if abs(px - (p.x + pl)) < EPS:   # new left face touches p's right
+            oy = _overlap_1d(py, py+rw, p.y, p.y+pw)
+            oz = _overlap_1d(pz, pz+h,  p.z, p.z+ph)
+            contact += oy * oz
+        if abs(px + rl - p.x) < EPS:     # new right face touches p's left
+            oy = _overlap_1d(py, py+rw, p.y, p.y+pw)
+            oz = _overlap_1d(pz, pz+h,  p.z, p.z+ph)
+            contact += oy * oz
+
+        # Y-facing side contacts
+        if abs(py - (p.y + pw)) < EPS:   # new rear face touches p's front
+            ox = _overlap_1d(px, px+rl, p.x, p.x+pl)
+            oz = _overlap_1d(pz, pz+h,  p.z, p.z+ph)
+            contact += ox * oz
+        if abs(py + rw - p.y) < EPS:     # new front face touches p's rear
+            ox = _overlap_1d(px, px+rl, p.x, p.x+pl)
+            oz = _overlap_1d(pz, pz+h,  p.z, p.z+ph)
+            contact += ox * oz
+
+    return -contact   # negate → callers use min()
+
+
+# ── Placement validity ────────────────────────────────────────────────────────
 
 def can_place(rl, rw, h, px, py, pz,
               truck_l, truck_w, truck_h,
               placed: List[PackBox]) -> bool:
-    """
-    Return True if a box with footprint rl×rw and height h can be
-    placed at (px, py, pz) respecting:
-      1. Truck bounds.
-      2. No 3D overlap with already-placed boxes.
-      3. Stackable constraint (nothing above a non-stackable box).
-    """
-    EPS = 1e-9
-
-    # 1. Bounds
     if px + rl > truck_l + EPS: return False
     if py + rw > truck_w + EPS: return False
     if pz + h  > truck_h + EPS: return False
 
     for p in placed:
-        # 2. Collision
         if _overlaps_3d(px, py, pz, rl, rw, h,
                         p.x, p.y, p.z, p.placed_l, p.placed_w, p.placed_h):
             return False
-
-        # 3. Non-stackable: block anything above this box's footprint
         if not p.stackable:
             p_top = p.z + p.placed_h
             if pz >= p_top - EPS:
                 if _overlaps_xy(px, py, rl, rw,
                                 p.x, p.y, p.placed_l, p.placed_w):
                     return False
-
     return True
 
 
-# ── Scoring ───────────────────────────────────────────────────────────────────
+# ── Extreme-point generator ───────────────────────────────────────────────────
 
-def _score(px, py, pz, placed: List[PackBox]) -> float:
+def _generate_eps(placed: List[PackBox],
+                  truck_l: float, truck_w: float, truck_h: float
+                  ) -> List[Tuple[float, float, float]]:
     """
-    Column-preference scoring:
-
-      ① Directly above an existing box ("continue a column"):
-            score = px*0.5 + py*0.05 + pz*0.1
-         → very low numbers → strongly preferred
-
-      ② On the truck floor (pz ≈ 0):
-            score = 10 + px*2 + py*0.2
-         → slightly higher than column-continuation
-
-      ③ Any other elevated position (unsupported / new height):
-            score = 500 + pz*100 + px*2 + py*0.2
-         → effectively avoided; only happens when floor is full
-           and no column top is available
-
-    Result: the algorithm builds columns upward before spreading
-    on the floor, while still filling the floor left-to-right.
+    Build a rich set of extreme points from all placed box corners.
+    For every combination of (x-edge, y-edge, z-edge) from placed boxes
+    (plus walls) we generate a candidate EP.  Points outside the truck
+    or already inside a placed box are discarded.
     """
-    if _is_on_top_of(px, py, pz, placed):
-        # ① Continue an existing column — almost free
-        return px * 0.5 + py * 0.05 + pz * 0.1
+    # Collect unique coordinate values along each axis
+    xs: Set[float] = {0.0}
+    ys: Set[float] = {0.0}
+    zs: Set[float] = {0.0}
 
-    if pz < 1e-9:
-        # ② New floor position
-        return 10 + px * 2 + py * 0.2
+    for p in placed:
+        xs.add(p.x + p.placed_l)
+        ys.add(p.y + p.placed_w)
+        zs.add(p.z + p.placed_h)
 
-    # ③ Elevated but not directly above a known box
-    return 500 + pz * 100 + px * 2 + py * 0.2
+    eps: List[Tuple[float, float, float]] = []
+
+    for x in xs:
+        for y in ys:
+            for z in zs:
+                if x >= truck_l - EPS: continue
+                if y >= truck_w - EPS: continue
+                if z >= truck_h - EPS: continue
+                # Reject points that are strictly inside any placed box
+                inside = False
+                for p in placed:
+                    if (p.x + EPS < x < p.x + p.placed_l - EPS and
+                        p.y + EPS < y < p.y + p.placed_w - EPS and
+                        p.z + EPS < z < p.z + p.placed_h - EPS):
+                        inside = True
+                        break
+                if not inside:
+                    eps.append((x, y, z))
+
+    return eps
 
 
-# ── Extreme-point packing ─────────────────────────────────────────────────────
+# ── Main packing routine ──────────────────────────────────────────────────────
 
 def pack(truck_l: float, truck_w: float, truck_h: float,
          boxes: List[PackBox]) -> Tuple[List[PackBox], List[PackBox]]:
-    """
-    Pack boxes using the Extreme Point heuristic.
-    Returns (placed_boxes, unpacked_boxes).
-    """
+
     placed:   List[PackBox] = []
     unpacked: List[PackBox] = []
 
-    # Largest-volume-first so big boxes anchor the layout
-    order = sorted(boxes, key=lambda b: b.length * b.width * b.height, reverse=True)
-
-    eps: List[Tuple[float, float, float]] = [(0.0, 0.0, 0.0)]
-
-    def _add_ep(pt):
-        if pt not in eps:
-            eps.append(pt)
+    # Sort: tallest first (fills height layers cleanly), then largest base area
+    order = sorted(
+        boxes,
+        key=lambda b: (round(b.height, 3), b.length * b.width),
+        reverse=True,
+    )
 
     for box in order:
+        best_score = float("inf")   # lower (more negative) = more contact
         best_pos   = None
         best_rot   = None
-        best_score = float("inf")
 
-        rotations = get_rotations(box.length, box.width, box.rotatable)
+        # Get candidate positions: origin + all rich EPs from placed boxes
+        eps = [(0.0, 0.0, 0.0)] + _generate_eps(placed, truck_l, truck_w, truck_h)
+        # Deduplicate
+        eps = list(dict.fromkeys(eps))
 
-        for ep in eps:
-            px, py, pz = ep
-            for rl, rw in rotations:
+        rots = _rotations(box.length, box.width, box.rotatable)
+
+        for (px, py, pz) in eps:
+            for (rl, rw) in rots:
                 if can_place(rl, rw, box.height, px, py, pz,
                              truck_l, truck_w, truck_h, placed):
-                    sc = _score(px, py, pz, placed)
+                    sc = _contact_score(px, py, pz, rl, rw, box.height,
+                                        truck_l, truck_w, truck_h, placed)
                     if sc < best_score:
                         best_score = sc
-                        best_pos   = ep
+                        best_pos   = (px, py, pz)
                         best_rot   = (rl, rw)
 
-        if best_pos and best_rot:
+        if best_pos:
             px, py, pz = best_pos
             rl, rw     = best_rot
             box.x, box.y, box.z              = px, py, pz
             box.placed_l, box.placed_w, box.placed_h = rl, rw, box.height
             box.placed = True
             placed.append(box)
-
-            # Three new extreme points from the top-right-front corner
-            _add_ep((px + rl, py,      pz            ))
-            _add_ep((px,      py + rw, pz            ))
-            _add_ep((px,      py,      pz + box.height))
-
-            # Prune points that are outside the truck
-            eps[:] = [
-                ep for ep in eps
-                if ep[0] < truck_l - 1e-9
-                and ep[1] < truck_w - 1e-9
-                and ep[2] < truck_h - 1e-9
-            ]
-            # Sort so column-top EPs come first in the iteration
-            eps.sort(key=lambda p: _score(p[0], p[1], p[2], placed))
         else:
             unpacked.append(box)
 
@@ -245,11 +272,10 @@ def pack(truck_l: float, truck_w: float, truck_h: float,
 # ── Public interface ──────────────────────────────────────────────────────────
 
 def run_packing(
-    truck_l: float,
-    truck_w: float,
-    truck_h: float,
+    truck_l: float, truck_w: float, truck_h: float,
     items: List[dict],
 ) -> Tuple[List[dict], List[dict], float]:
+
     boxes: List[PackBox] = []
     for item in items:
         for i in range(item["quantity"]):
