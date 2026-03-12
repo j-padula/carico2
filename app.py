@@ -1,5 +1,6 @@
 """
-🚛 Gestor de Carga de Camiones – Streamlit app
+🚛 Gestor de Carga de Camiones / Gestore Carico Camion / Truck Loader
+Streamlit app – multilingual (ES / IT / EN)
 """
 
 import streamlit as st
@@ -9,10 +10,11 @@ from datetime import datetime
 import database as db
 import packing
 import visualization as viz
+from translations import get_t
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Gestor de Carga de Camiones",
+    page_title="Truck Loader",
     page_icon="🚛",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -21,24 +23,23 @@ st.set_page_config(
 st.markdown("""
 <style>
 .block-container { padding-top: 1.5rem; }
-
 div[data-testid="metric-container"] {
     background: linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);
     border-radius: 12px; padding: 1rem 1.4rem; color: white;
 }
-div[data-testid="metric-container"] label { color: #a8dadc !important; font-size:.85rem; }
+div[data-testid="metric-container"] label
+    { color: #a8dadc !important; font-size:.85rem; }
 div[data-testid="metric-container"] div[data-testid="stMetricValue"]
     { color: white !important; font-size:1.8rem; font-weight:700; }
-
 [data-testid="stSidebar"] { background:#16213e; }
 [data-testid="stSidebar"] * { color:#e0e0e0; }
-
 .stButton > button { border-radius:8px; font-weight:600; transition:.2s; }
-.stButton > button:hover { transform:translateY(-1px); box-shadow:0 4px 12px rgba(0,0,0,.3); }
-
-.eff-bar-wrap { background:#ddd; border-radius:20px; height:22px; overflow:hidden; margin:4px 0 2px; }
+.stButton > button:hover
+    { transform:translateY(-1px); box-shadow:0 4px 12px rgba(0,0,0,.3); }
+.eff-bar-wrap
+    { background:#ddd; border-radius:20px; height:22px;
+      overflow:hidden; margin:4px 0 2px; }
 .eff-bar { height:100%; border-radius:20px; transition:width .6s ease; }
-
 .tag-pill  { display:inline-block; padding:1px 8px; border-radius:12px;
              font-size:.72rem; font-weight:600; margin:1px 2px;
              background:#e9ecef; color:#495057; }
@@ -56,6 +57,25 @@ div[data-testid="metric-container"] div[data-testid="stMetricValue"]
 
 db.init_db()
 
+# ── Language selection (persisted in session) ─────────────────────────────────
+_LANG_OPTIONS = {"🇦🇷 Español": "es", "🇮🇹 Italiano": "it", "🇬🇧 English": "en"}
+_LANG_LABELS  = list(_LANG_OPTIONS.keys())
+
+if "lang" not in st.session_state:
+    st.session_state["lang"] = "es"
+
+with st.sidebar:
+    lang_label = st.selectbox(
+        "🌐 Idioma / Language",
+        _LANG_LABELS,
+        index=list(_LANG_OPTIONS.values()).index(st.session_state["lang"]),
+        key="lang_select",
+    )
+    st.session_state["lang"] = _LANG_OPTIONS[lang_label]
+
+t    = get_t(st.session_state["lang"])
+lang = st.session_state["lang"]
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -69,8 +89,8 @@ def _tag_html(tags_str):
     if not tags_str:
         return ""
     return "".join(
-        f'<span class="tag-pill">#{t.strip()}</span>'
-        for t in tags_str.split(",") if t.strip()
+        f'<span class="tag-pill">#{s.strip()}</span>'
+        for s in tags_str.split(",") if s.strip()
     )
 
 
@@ -78,17 +98,15 @@ def _badges(pkg):
     parts = []
     if pkg.get("category"):
         parts.append(f'<span class="cat-pill">{pkg["category"]}</span>')
-    stackable  = bool(pkg.get("stackable", 1))
-    rotatable  = bool(pkg.get("rotatable", 1))
     parts.append(
-        '<span class="badge-yes">⬆ Apilable</span>'
-        if stackable else
-        '<span class="badge-no">⛔ No apilable</span>'
+        f'<span class="badge-yes">{t("badge_stackable")}</span>'
+        if bool(pkg.get("stackable", 1)) else
+        f'<span class="badge-no">{t("badge_no_stack")}</span>'
     )
     parts.append(
-        '<span class="badge-neutral">🔄 Girable</span>'
-        if rotatable else
-        '<span class="badge-no">📌 No girable</span>'
+        f'<span class="badge-neutral">{t("badge_rotatable")}</span>'
+        if bool(pkg.get("rotatable", 1)) else
+        f'<span class="badge-no">{t("badge_no_rotate")}</span>'
     )
     tags = _tag_html(pkg.get("tags", ""))
     if tags:
@@ -104,119 +122,115 @@ def _eff_bar(efficiency):
         f'</div>',
         unsafe_allow_html=True,
     )
-    st.caption(f"Eficiencia de llenado: {efficiency:.1f}%")
+    st.caption(t("eff_caption", e=efficiency))
 
 
-def _safe_get_categories():
+def _safe_cats():
     try:
         return db.get_categories() if hasattr(db, "get_categories") else []
     except Exception:
         return []
 
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
-
+# ── Sidebar navigation ────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("## 🚛 Carga de Camiones")
+    st.markdown(f"## 🚛 {t('app_title')}")
     st.markdown("---")
-    page = st.radio(
-        "nav", ["📦 Gestión de Bultos", "🗂️ Nuevo Plan de Carga", "📋 Historial de Planes"],
-        label_visibility="collapsed",
-    )
+    nav_options = [t("nav_packages"), t("nav_new_plan"), t("nav_history")]
+    page = st.radio("nav", nav_options, label_visibility="collapsed")
     st.markdown("---")
     all_pkgs  = db.get_packages()
     all_plans = db.get_plans()
-    st.metric("Bultos registrados", len(all_pkgs))
-    st.metric("Planes guardados",   len(all_plans))
-    cats = _safe_get_categories()
+    st.metric(t("sidebar_packages"), len(all_pkgs))
+    st.metric(t("sidebar_plans"),    len(all_plans))
+    cats = _safe_cats()
     if cats:
-        st.markdown("**Categorías**")
+        st.markdown(t("sidebar_categories"))
         for c in cats:
             st.markdown(f'<span class="cat-pill">{c}</span>', unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  PAGE 1 – GESTIÓN DE BULTOS
+#  PAGE 1 – PACKAGES
 # ══════════════════════════════════════════════════════════════════════════════
-if page == "📦 Gestión de Bultos":
-    st.title("📦 Gestión de Bultos")
+if page == t("nav_packages"):
+    st.title(t("pg1_title"))
+    st.markdown(t("pg1_subtitle"))
 
     # ── Add form ──────────────────────────────────────────────────────────────
-    with st.expander("➕ Agregar nuevo bulto", expanded=len(all_pkgs) == 0):
+    with st.expander(t("add_package_expander"), expanded=len(all_pkgs) == 0):
         with st.form("add_pkg", clear_on_submit=True):
             fa1, fa2 = st.columns(2)
             with fa1:
-                new_name = st.text_input("Nombre del bulto *", placeholder="Ej: Caja grande")
-                new_desc = st.text_input("Descripción", placeholder="Opcional")
+                new_name   = st.text_input(t("field_name"), placeholder=t("field_name_ph"))
+                new_desc   = st.text_input(t("field_desc"), placeholder=t("field_desc_ph"))
             with fa2:
-                existing_cats = [""] + _safe_get_categories()
-                cat_select = st.selectbox(
-                    "Categoría existente", existing_cats,
-                    format_func=lambda x: "— sin categoría —" if x == "" else x
+                ec = [""] + _safe_cats()
+                cat_sel = st.selectbox(
+                    t("field_cat_existing"), ec,
+                    format_func=lambda x: t("field_cat_none") if x == "" else x,
                 )
-                cat_new   = st.text_input("…o nueva categoría", placeholder="Ej: Electrónica")
-                new_tags  = st.text_input("Etiquetas (coma)", placeholder="frágil, urgente")
+                cat_new  = st.text_input(t("field_cat_new"), placeholder=t("field_cat_new_ph"))
+                new_tags = st.text_input(t("field_tags"),    placeholder=t("field_tags_ph"))
 
-            st.markdown("**Dimensiones (metros)** — la altura siempre queda vertical")
+            st.markdown(t("dims_title"))
             fd1, fd2, fd3, fd4 = st.columns(4)
-            with fd1: new_l = st.number_input("Largo", min_value=0.01, step=0.01, value=1.0, format="%.2f")
-            with fd2: new_w = st.number_input("Ancho", min_value=0.01, step=0.01, value=0.8, format="%.2f")
-            with fd3: new_h = st.number_input("Alto",  min_value=0.01, step=0.01, value=1.2, format="%.2f")
-            with fd4: new_weight = st.number_input("Peso (kg)", min_value=0.0, step=0.5, value=0.0)
+            with fd1: new_l = st.number_input(t("field_length"), min_value=0.01, step=0.01, value=1.0,  format="%.2f")
+            with fd2: new_w = st.number_input(t("field_width"),  min_value=0.01, step=0.01, value=0.8,  format="%.2f")
+            with fd3: new_h = st.number_input(t("field_height"), min_value=0.01, step=0.01, value=1.2,  format="%.2f")
+            with fd4: new_weight = st.number_input(t("field_weight"), min_value=0.0, step=0.5, value=0.0)
 
-            st.markdown("**Comportamiento**")
+            st.markdown(t("behaviour_title"))
             bc1, bc2 = st.columns(2)
             with bc1:
-                new_stackable = st.checkbox(
-                    "⬆ Se puede apilar encima",
-                    value=True,
-                    help="Si está marcado, otros bultos pueden ir encima de éste."
-                )
+                new_stackable = st.checkbox(t("chk_stackable"), value=True, help=t("chk_stackable_help"))
             with bc2:
-                new_rotatable = st.checkbox(
-                    "🔄 Se puede girar 90°",
-                    value=True,
-                    help="Si está marcado, el algoritmo puede rotar el bulto en el plano horizontal para que entre mejor."
-                )
+                new_rotatable = st.checkbox(t("chk_rotatable"), value=True, help=t("chk_rotatable_help"))
 
-            if st.form_submit_button("💾 Guardar bulto", use_container_width=True):
+            if st.form_submit_button(t("btn_save_package"), use_container_width=True):
                 if not new_name.strip():
-                    st.error("El nombre es obligatorio.")
+                    st.error(t("msg_name_required"))
                 else:
-                    final_cat = cat_new.strip() if cat_new.strip() else cat_select
+                    final_cat = cat_new.strip() if cat_new.strip() else cat_sel
                     db.add_package(
-                        new_name.strip(), new_l, new_w, new_h, new_weight, new_desc,
+                        new_name.strip(), new_l, new_w, new_h,
+                        new_weight, new_desc,
                         category=final_cat, tags=new_tags,
                         stackable=new_stackable, rotatable=new_rotatable,
                     )
-                    st.success(f"✅ **{new_name}** agregado.")
+                    st.success(t("msg_pkg_added", name=new_name.strip()))
                     st.rerun()
 
     st.markdown("---")
 
     # ── Filters ───────────────────────────────────────────────────────────────
-    cats = _safe_get_categories()
+    cats = _safe_cats()
     fc1, fc2 = st.columns([1, 2])
     with fc1:
-        cat_filter = st.selectbox("Filtrar por categoría", ["Todas"] + cats, key="cat_filter")
+        cat_filter = st.selectbox(
+            t("filter_category"),
+            [t("filter_all")] + cats,
+            key="cat_filter",
+        )
     with fc2:
-        search_q = st.text_input("🔍 Buscar por nombre", placeholder="Escribí para filtrar…")
+        search_q = st.text_input(t("filter_search"), placeholder=t("filter_search_ph"))
 
-    packages = db.get_packages(category_filter=cat_filter if cat_filter != "Todas" else None)
+    packages = db.get_packages(
+        category_filter=cat_filter if cat_filter != t("filter_all") else None
+    )
     if search_q.strip():
         packages = [p for p in packages if search_q.lower() in p["name"].lower()]
 
-    st.subheader(f"Bultos registrados ({len(packages)})")
+    st.subheader(t("pkg_list_title", n=len(packages)))
     _ss("editing_pkg", None)
 
     if not packages:
-        st.info("No hay bultos que coincidan con el filtro.")
+        st.info(t("no_packages"))
 
     for pkg in packages:
         vol = pkg["length"] * pkg["width"] * pkg["height"]
         with st.container():
             c_col, info_col, dim_col, act_col = st.columns([0.05, 0.42, 0.33, 0.20])
-
             with c_col:
                 st.markdown(
                     f'<div style="width:28px;height:56px;border-radius:6px;'
@@ -240,48 +254,48 @@ if page == "📦 Gestión de Bultos":
             with act_col:
                 ce, cd = st.columns(2)
                 with ce:
-                    if st.button("✏️", key=f"edit_{pkg['id']}", help="Editar"):
+                    if st.button("✏️", key=f"edit_{pkg['id']}", help=t("btn_edit")):
                         st.session_state["editing_pkg"] = (
-                            None if st.session_state.get("editing_pkg") == pkg["id"] else pkg["id"]
+                            None if st.session_state.get("editing_pkg") == pkg["id"]
+                            else pkg["id"]
                         )
                 with cd:
-                    if st.button("🗑️", key=f"del_{pkg['id']}", help="Eliminar"):
+                    if st.button("🗑️", key=f"del_{pkg['id']}", help=t("btn_delete")):
                         db.delete_package(pkg["id"])
                         st.rerun()
 
-            # Inline edit
             if st.session_state.get("editing_pkg") == pkg["id"]:
                 with st.form(f"edit_{pkg['id']}"):
-                    st.markdown(f"**Editando:** {pkg['name']}")
+                    st.markdown(t("edit_title", name=pkg["name"]))
                     ef1, ef2 = st.columns(2)
                     with ef1:
-                        e_name = st.text_input("Nombre", value=pkg["name"])
-                        e_desc = st.text_input("Descripción", value=pkg.get("description", ""))
+                        e_name = st.text_input(t("field_name"), value=pkg["name"])
+                        e_desc = st.text_input(t("field_desc"), value=pkg.get("description",""))
                     with ef2:
-                        ec_opts = [""] + _safe_get_categories()
-                        ec_idx  = ec_opts.index(pkg.get("category","")) if pkg.get("category","") in ec_opts else 0
-                        e_cat_sel = st.selectbox("Categoría", ec_opts, index=ec_idx,
-                                                 format_func=lambda x: "— sin —" if x=="" else x)
-                        e_cat_new = st.text_input("Nueva categoría", value="")
-                        e_tags    = st.text_input("Etiquetas", value=pkg.get("tags",""))
+                        ec2   = [""] + _safe_cats()
+                        ec_i  = ec2.index(pkg.get("category","")) if pkg.get("category","") in ec2 else 0
+                        e_cat_sel = st.selectbox(
+                            t("field_cat_existing"), ec2, index=ec_i,
+                            format_func=lambda x: t("field_cat_none_short") if x=="" else x,
+                        )
+                        e_cat_new = st.text_input(t("field_cat_new_edit"), value="")
+                        e_tags    = st.text_input(t("field_tags"), value=pkg.get("tags",""))
 
                     ed1, ed2, ed3, ed4 = st.columns(4)
-                    with ed1: e_l = st.number_input("Largo", value=float(pkg["length"]), min_value=0.01, step=0.01, format="%.2f")
-                    with ed2: e_w = st.number_input("Ancho", value=float(pkg["width"]),  min_value=0.01, step=0.01, format="%.2f")
-                    with ed3: e_h = st.number_input("Alto",  value=float(pkg["height"]), min_value=0.01, step=0.01, format="%.2f")
-                    with ed4: e_weight = st.number_input("Peso (kg)", value=float(pkg.get("weight",0)), min_value=0.0, step=0.5)
+                    with ed1: e_l = st.number_input(t("field_length"), value=float(pkg["length"]), min_value=0.01, step=0.01, format="%.2f")
+                    with ed2: e_w = st.number_input(t("field_width"),  value=float(pkg["width"]),  min_value=0.01, step=0.01, format="%.2f")
+                    with ed3: e_h = st.number_input(t("field_height"), value=float(pkg["height"]), min_value=0.01, step=0.01, format="%.2f")
+                    with ed4: e_weight = st.number_input(t("field_weight"), value=float(pkg.get("weight",0)), min_value=0.0, step=0.5)
 
                     eb1, eb2 = st.columns(2)
                     with eb1:
-                        e_stack = st.checkbox("⬆ Se puede apilar encima",
-                                              value=bool(pkg.get("stackable",1)))
+                        e_stack = st.checkbox(t("chk_stackable"), value=bool(pkg.get("stackable",1)))
                     with eb2:
-                        e_rot   = st.checkbox("🔄 Se puede girar 90°",
-                                              value=bool(pkg.get("rotatable",1)))
+                        e_rot   = st.checkbox(t("chk_rotatable"), value=bool(pkg.get("rotatable",1)))
 
                     sb1, sb2 = st.columns(2)
                     with sb1:
-                        if st.form_submit_button("💾 Guardar", use_container_width=True):
+                        if st.form_submit_button(t("btn_save"), use_container_width=True):
                             final_cat = e_cat_new.strip() if e_cat_new.strip() else e_cat_sel
                             db.update_package(
                                 pkg["id"], e_name, e_l, e_w, e_h, e_weight, e_desc,
@@ -291,7 +305,7 @@ if page == "📦 Gestión de Bultos":
                             st.session_state["editing_pkg"] = None
                             st.rerun()
                     with sb2:
-                        if st.form_submit_button("✖ Cancelar", use_container_width=True):
+                        if st.form_submit_button(t("btn_cancel"), use_container_width=True):
                             st.session_state["editing_pkg"] = None
                             st.rerun()
 
@@ -299,63 +313,64 @@ if page == "📦 Gestión de Bultos":
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  PAGE 2 – NUEVO PLAN DE CARGA
+#  PAGE 2 – NEW PLAN
 # ══════════════════════════════════════════════════════════════════════════════
-elif page == "🗂️ Nuevo Plan de Carga":
-    st.title("🗂️ Nuevo Plan de Carga")
+elif page == t("nav_new_plan"):
+    st.title(t("pg2_title"))
 
     packages = db.get_packages()
     if not packages:
-        st.warning("⚠️ No hay bultos registrados. Andá a **Gestión de Bultos** primero.")
+        st.warning(t("pg2_no_packages"))
         st.stop()
 
     # ── Step 1 ────────────────────────────────────────────────────────────────
-    st.subheader("1️⃣ Información del plan")
-    p1, p2 = st.columns([1,1])
+    st.subheader(t("step1_title"))
+    p1, p2 = st.columns(2)
     with p1:
-        plan_name  = st.text_input("Nombre del plan *", placeholder="Ej: Envío CABA – Semana 23", key="plan_name")
-        st.caption(f"📅 Fecha automática: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+        plan_name  = st.text_input(t("field_plan_name"), placeholder=t("field_plan_name_ph"), key="plan_name")
+        st.caption(t("field_auto_date", dt=datetime.now().strftime("%Y-%m-%d %H:%M")))
     with p2:
-        plan_notes = st.text_area("Notas", height=90, placeholder="Destino, transportista…", key="plan_notes")
+        plan_notes = st.text_area(t("field_notes"), height=90, placeholder=t("field_notes_ph"), key="plan_notes")
 
     st.markdown("---")
 
     # ── Step 2 ────────────────────────────────────────────────────────────────
-    st.subheader("2️⃣ Dimensiones del camión / contenedor")
-    presets = {
-        "Personalizado":                     None,
-        "Camión mediano (7×2.4×2.5 m)":     (7.0, 2.4, 2.5),
-        "Semi-trailer (12×2.4×2.6 m)":      (12.0, 2.4, 2.6),
-        "Contenedor 20' (5.9×2.35×2.39 m)": (5.9, 2.35, 2.39),
-        "Contenedor 40' (12×2.35×2.39 m)":  (12.0, 2.35, 2.39),
-        "Furgón pequeño (3×1.8×1.9 m)":     (3.0, 1.8, 1.9),
+    st.subheader(t("step2_title"))
+
+    preset_keys = ["truck_custom","truck_medium","truck_semi","truck_20ft","truck_40ft","truck_van"]
+    preset_vals_map = {
+        "truck_custom": None,
+        "truck_medium": (7.0,  2.4,  2.5),
+        "truck_semi":   (12.0, 2.4,  2.6),
+        "truck_20ft":   (5.9,  2.35, 2.39),
+        "truck_40ft":   (12.0, 2.35, 2.39),
+        "truck_van":    (3.0,  1.8,  1.9),
     }
-    preset_sel  = st.selectbox("Plantilla", list(presets.keys()))
-    preset_vals = presets[preset_sel] or (7.0, 2.4, 2.5)
+    preset_labels = [t(k) for k in preset_keys]
+    preset_sel    = st.selectbox(t("truck_template"), preset_labels)
+    chosen_key    = preset_keys[preset_labels.index(preset_sel)]
+    preset_vals   = preset_vals_map[chosen_key] or (7.0, 2.4, 2.5)
 
     tc1, tc2, tc3 = st.columns(3)
-    with tc1: truck_l = st.number_input("Largo (m)", min_value=0.1, value=float(preset_vals[0]), step=0.1, format="%.2f")
-    with tc2: truck_w = st.number_input("Ancho (m)", min_value=0.1, value=float(preset_vals[1]), step=0.1, format="%.2f")
-    with tc3: truck_h = st.number_input("Alto (m)",  min_value=0.1, value=float(preset_vals[2]), step=0.1, format="%.2f")
+    with tc1: truck_l = st.number_input(t("truck_length_m"), min_value=0.1, value=float(preset_vals[0]), step=0.1, format="%.2f")
+    with tc2: truck_w = st.number_input(t("truck_width_m"),  min_value=0.1, value=float(preset_vals[1]), step=0.1, format="%.2f")
+    with tc3: truck_h = st.number_input(t("truck_height_m"), min_value=0.1, value=float(preset_vals[2]), step=0.1, format="%.2f")
 
     truck_vol = truck_l * truck_w * truck_h
-    st.info(f"📦 Volumen total: **{truck_vol:.2f} m³**")
+    st.info(t("truck_total_vol", v=truck_vol))
     st.markdown("---")
 
     # ── Step 3 ────────────────────────────────────────────────────────────────
-    st.subheader("3️⃣ Selección de bultos")
-
-    cats_for_plan   = ["Todas"] + _safe_get_categories()
-    plan_cat_filter = st.selectbox("Filtrar por categoría", cats_for_plan, key="plan_cat_filter")
+    st.subheader(t("step3_title"))
+    cats_for_plan   = [t("filter_all")] + _safe_cats()
+    plan_cat_filter = st.selectbox(t("filter_category"), cats_for_plan, key="plan_cat_filter")
     packages_plan   = db.get_packages(
-        category_filter=plan_cat_filter if plan_cat_filter != "Todas" else None
+        category_filter=plan_cat_filter if plan_cat_filter != t("filter_all") else None
     )
-
-    st.markdown("Indicá cuántas unidades de cada bulto querés cargar.")
+    st.markdown(t("step3_subtitle"))
 
     qty_inputs = {}
     pkg_cols   = st.columns(min(len(packages_plan), 3))
-
     for i, pkg in enumerate(packages_plan):
         col = pkg_cols[i % 3]
         vol = pkg["length"] * pkg["width"] * pkg["height"]
@@ -372,7 +387,7 @@ elif page == "🗂️ Nuevo Plan de Carga":
                 unsafe_allow_html=True,
             )
             qty = st.number_input(
-                "Cantidad", min_value=0, max_value=500, step=1, value=0,
+                "qty", min_value=0, max_value=500, step=1, value=0,
                 key=f"qty_{pkg['id']}", label_visibility="collapsed",
             )
             qty_inputs[pkg["id"]] = qty
@@ -396,35 +411,31 @@ elif page == "🗂️ Nuevo Plan de Carga":
         if qty_inputs.get(pkg["id"], 0) > 0
     ]
 
-    total_boxes     = sum(i["quantity"] for i in selected_items)
-    total_vol_boxes = sum(i["length"] * i["width"] * i["height"] * i["quantity"] for i in selected_items)
-    theo_eff        = min(100, total_vol_boxes / truck_vol * 100) if truck_vol > 0 else 0
-
     if selected_items:
         st.markdown("---")
         mc1, mc2, mc3 = st.columns(3)
-        mc1.metric("Total de bultos",         total_boxes)
-        mc2.metric("Volumen de bultos",        f"{total_vol_boxes:.2f} m³")
-        mc3.metric("Eficiencia máx. posible",  f"{theo_eff:.1f}%")
+        total_boxes     = sum(i["quantity"] for i in selected_items)
+        total_vol_boxes = sum(i["length"]*i["width"]*i["height"]*i["quantity"] for i in selected_items)
+        theo_eff        = min(100, total_vol_boxes / truck_vol * 100) if truck_vol else 0
+        mc1.metric(t("metric_total_boxes"), total_boxes)
+        mc2.metric(t("metric_total_vol"),   f"{total_vol_boxes:.2f} m³")
+        mc3.metric(t("metric_max_eff"),     f"{theo_eff:.1f}%")
 
-        warnings = []
         no_stack = [i["name"] for i in selected_items if not i["stackable"]]
         no_rot   = [i["name"] for i in selected_items if not i["rotatable"]]
         if no_stack:
-            warnings.append(f"⛔ **No apilables** (nada encima): {', '.join(no_stack)}")
+            st.warning(t("warn_no_stack", names=", ".join(f"**{n}**" for n in no_stack)))
         if no_rot:
-            warnings.append(f"📌 **No girables** (orientación fija): {', '.join(no_rot)}")
-        for w in warnings:
-            st.warning(w)
+            st.warning(t("warn_no_rotate", names=", ".join(f"**{n}**" for n in no_rot)))
 
     st.markdown("---")
 
-    if st.button("🚀 Generar Plan de Carga", type="primary",
+    if st.button(t("btn_generate"), type="primary",
                  use_container_width=True, disabled=len(selected_items) == 0):
         if not plan_name.strip():
-            st.error("⚠️ Poné un nombre al plan.")
+            st.error(t("err_no_plan_name"))
         else:
-            with st.spinner("⚙️ Calculando distribución óptima…"):
+            with st.spinner(t("spinner_packing")):
                 packed, unpacked, efficiency = packing.run_packing(
                     truck_l, truck_w, truck_h, selected_items
                 )
@@ -444,53 +455,55 @@ elif page == "🗂️ Nuevo Plan de Carga":
             })
             st.rerun()
 
-    # ── Results ───────────────────────────────────────────────────────────────
     if st.session_state.get("last_packed") is not None:
         packed     = st.session_state["last_packed"]
         unpacked   = st.session_state["last_unpacked"]
         efficiency = st.session_state["last_eff"]
         tl, tw, th = st.session_state["last_truck"]
 
-        st.success(f"✅ Plan guardado: **{st.session_state['last_name']}**")
+        st.success(t("success_plan_saved", name=st.session_state["last_name"]))
 
         r1, r2, r3, r4 = st.columns(4)
-        r1.metric("Bultos cargados", len(packed))
-        r2.metric("Sin cargar",      len(unpacked))
-        r3.metric("Eficiencia",      f"{efficiency:.1f}%")
-        used_vol = sum(b["placed_l"] * b["placed_w"] * b["placed_h"] for b in packed)
-        r4.metric("Vol. utilizado",  f"{used_vol:.2f} m³")
+        r1.metric(t("metric_loaded"),   len(packed))
+        r2.metric(t("metric_unloaded"), len(unpacked))
+        r3.metric(t("metric_efficiency"), f"{efficiency:.1f}%")
+        used_vol = sum(b["placed_l"]*b["placed_w"]*b["placed_h"] for b in packed)
+        r4.metric(t("metric_vol_used"), f"{used_vol:.2f} m³")
 
         _eff_bar(efficiency)
 
         st.plotly_chart(
-            viz.build_figure(tl, tw, th, packed, unpacked, efficiency),
+            viz.build_figure(tl, tw, th, packed, unpacked, efficiency, t=t),
             use_container_width=True,
         )
 
         if packed:
-            st.subheader("🗺️ Vista superior")
-            st.plotly_chart(viz.build_2d_layers(tl, tw, th, packed), use_container_width=True)
+            st.subheader(t("top_view_title"))
+            st.plotly_chart(
+                viz.build_2d_layers(tl, tw, th, packed, t=t),
+                use_container_width=True,
+            )
 
         if unpacked:
             st.warning(
-                f"⚠️ **{len(unpacked)} bulto(s) no cargados** (no entran):\n\n"
+                t("warn_unpacked", n=len(unpacked)) + "\n\n"
                 + "\n".join(
                     f"- {b['name']} ({b['length']:.2f}×{b['width']:.2f}×{b['height']:.2f} m)"
                     for b in unpacked
                 )
             )
 
-        with st.expander("📋 Detalle de posicionamiento"):
+        with st.expander(t("detail_expander")):
             rows = [
                 {
-                    "Bulto":       b["name"],
-                    "X (m)":      f"{b['x']:.2f}",
-                    "Y (m)":      f"{b['y']:.2f}",
-                    "Z (m)":      f"{b['z']:.2f}",
-                    "L×A×H (m)":  f"{b['placed_l']:.2f}×{b['placed_w']:.2f}×{b['placed_h']:.2f}",
-                    "Vol (m³)":   f"{b['placed_l']*b['placed_w']*b['placed_h']:.3f}",
-                    "Apilable":   "✅" if b.get("stackable", True) else "⛔",
-                    "Girado":     "🔄" if (abs(b["placed_l"] - b["length"]) > 1e-3) else "—",
+                    t("col_package"):  b["name"],
+                    t("col_x"):        f"{b['x']:.2f}",
+                    t("col_y"):        f"{b['y']:.2f}",
+                    t("col_z"):        f"{b['z']:.2f}",
+                    t("col_dims"):     f"{b['placed_l']:.2f}×{b['placed_w']:.2f}×{b['placed_h']:.2f}",
+                    t("col_vol"):      f"{b['placed_l']*b['placed_w']*b['placed_h']:.3f}",
+                    t("col_stackable"):"✅" if b.get("stackable",True) else "⛔",
+                    t("col_rotated"):  "🔄" if abs(b["placed_l"]-b["length"])>1e-3 else "—",
                 }
                 for b in packed
             ]
@@ -498,14 +511,14 @@ elif page == "🗂️ Nuevo Plan de Carga":
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  PAGE 3 – HISTORIAL
+#  PAGE 3 – HISTORY
 # ══════════════════════════════════════════════════════════════════════════════
-elif page == "📋 Historial de Planes":
-    st.title("📋 Historial de Planes de Carga")
+elif page == t("nav_history"):
+    st.title(t("pg3_title"))
 
     plans = db.get_plans()
     if not plans:
-        st.info("Aún no hay planes guardados.")
+        st.info(t("pg3_no_plans"))
         st.stop()
 
     _ss("viewing_plan", None)
@@ -526,23 +539,29 @@ elif page == "📋 Historial de Planes":
                     unsafe_allow_html=True,
                 )
             with hc2:
+                unloaded_str = (
+                    t("lbl_unloaded_n", n=plan["unpacked_count"])
+                    if plan["unpacked_count"] else ""
+                )
                 st.markdown(
-                    f"📦 **{plan['packed_count']}** cargados"
-                    + (f" | ⚠️ {plan['unpacked_count']} sin cargar" if plan["unpacked_count"] else "")
-                    + f"<br><small>🚛 {plan['truck_length']}×{plan['truck_width']}×{plan['truck_height']} m</small>",
+                    t("lbl_loaded_n", n=plan["packed_count"]) + unloaded_str +
+                    f'<br><small>'
+                    + t("lbl_truck_dims", l=plan["truck_length"],
+                        w=plan["truck_width"], h=plan["truck_height"])
+                    + "</small>",
                     unsafe_allow_html=True,
                 )
             with hc3:
                 bc1, bc2 = st.columns(2)
                 with bc1:
-                    if st.button("👁️", key=f"vp_{plan['id']}", help="Ver"):
+                    if st.button("👁️", key=f"vp_{plan['id']}", help=t("btn_view")):
                         st.session_state["viewing_plan"] = (
                             None if st.session_state.get("viewing_plan") == plan["id"]
                             else plan["id"]
                         )
                         st.rerun()
                 with bc2:
-                    if st.button("🗑️", key=f"dp_{plan['id']}", help="Eliminar"):
+                    if st.button("🗑️", key=f"dp_{plan['id']}", help=t("btn_delete")):
                         db.delete_plan(plan["id"])
                         if st.session_state.get("viewing_plan") == plan["id"]:
                             st.session_state["viewing_plan"] = None
@@ -555,10 +574,10 @@ elif page == "📋 Historial de Planes":
 
                 st.markdown("---")
                 hi1, hi2, hi3, hi4 = st.columns(4)
-                hi1.metric("Eficiencia",     f"{full['efficiency']:.1f}%")
-                hi2.metric("Cargados",       full["packed_count"])
-                hi3.metric("Sin cargar",     full["unpacked_count"])
-                hi4.metric("Vol. utilizado", f"{full['used_volume']:.2f} m³")
+                hi1.metric(t("metric_efficiency"), f"{full['efficiency']:.1f}%")
+                hi2.metric(t("metric_loaded"),     full["packed_count"])
+                hi3.metric(t("metric_unloaded"),   full["unpacked_count"])
+                hi4.metric(t("metric_vol_used2"),  f"{full['used_volume']:.2f} m³")
 
                 _eff_bar(full["efficiency"])
 
@@ -569,42 +588,46 @@ elif page == "📋 Historial de Planes":
                     st.plotly_chart(
                         viz.build_figure(
                             full["truck_length"], full["truck_width"], full["truck_height"],
-                            packed, unpacked, full["efficiency"]
+                            packed, unpacked, full["efficiency"], t=t,
                         ),
                         use_container_width=True,
                     )
-                    st.subheader("🗺️ Vista superior")
+                    st.subheader(t("top_view_title"))
                     st.plotly_chart(
                         viz.build_2d_layers(
-                            full["truck_length"], full["truck_width"], full["truck_height"], packed
+                            full["truck_length"], full["truck_width"], full["truck_height"],
+                            packed, t=t,
                         ),
                         use_container_width=True,
                     )
-                    with st.expander("📋 Detalle"):
+                    with st.expander(t("detail_expander")):
                         rows = [
                             {
-                                "Bulto":      b["name"],
-                                "Pos":        f"({b['x']:.2f},{b['y']:.2f},{b['z']:.2f})",
-                                "L×A×H":     f"{b['placed_l']:.2f}×{b['placed_w']:.2f}×{b['placed_h']:.2f}",
-                                "Apilable":  "✅" if b.get("stackable",True) else "⛔",
-                                "Girado":    "🔄" if abs(b["placed_l"]-b["length"])>1e-3 else "—",
+                                t("col_package"):  b["name"],
+                                t("col_position"): f"({b['x']:.2f},{b['y']:.2f},{b['z']:.2f})",
+                                t("col_dims"):     f"{b['placed_l']:.2f}×{b['placed_w']:.2f}×{b['placed_h']:.2f}",
+                                t("col_stackable"):"✅" if b.get("stackable",True) else "⛔",
+                                t("col_rotated"):  "🔄" if abs(b["placed_l"]-b["length"])>1e-3 else "—",
                             }
                             for b in packed
                         ]
                         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
                 if unpacked:
-                    st.warning(", ".join(b["name"] for b in unpacked) + " — no entraron.")
+                    st.warning(
+                        ", ".join(b["name"] for b in unpacked)
+                        + t("lbl_unpacked_list")
+                    )
 
-                with st.expander("📦 Resumen de bultos del plan"):
+                with st.expander(t("summary_expander")):
                     rows2 = [
                         {
-                            "Bulto":     it["name"],
-                            "Categoría": it.get("category",""),
-                            "Cant.":     it["quantity"],
-                            "L×A×H":    f"{it['length']:.2f}×{it['width']:.2f}×{it['height']:.2f}",
-                            "Apilable":  "✅" if it.get("stackable",True) else "⛔",
-                            "Girable":   "🔄" if it.get("rotatable",True) else "📌",
+                            t("col_package"):   it["name"],
+                            t("col_category"):  it.get("category",""),
+                            t("col_qty"):       it["quantity"],
+                            t("col_dims"):      f"{it['length']:.2f}×{it['width']:.2f}×{it['height']:.2f}",
+                            t("col_stackable"): "✅" if it.get("stackable",True) else "⛔",
+                            t("col_rotatable"): "🔄" if it.get("rotatable",True) else "📌",
                         }
                         for it in full.get("items", [])
                     ]
