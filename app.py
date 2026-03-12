@@ -11,6 +11,20 @@ import database as db
 import packing
 import visualization as viz
 from translations import get_t
+import inspect as _inspect
+
+# Compatibility: works with old viz (no t param) and new viz (with t param)
+def _viz_figure(tl, tw, th, packed, unpacked, eff, t):
+    sig = _inspect.signature(viz.build_figure)
+    if "t" in sig.parameters:
+        return viz.build_figure(tl, tw, th, packed, unpacked, eff, t=t)
+    return viz.build_figure(tl, tw, th, packed, unpacked, eff)
+
+def _viz_2d(tl, tw, th, packed, t):
+    sig = _inspect.signature(viz.build_2d_layers)
+    if "t" in sig.parameters:
+        return viz.build_2d_layers(tl, tw, th, packed, t=t)
+    return viz.build_2d_layers(tl, tw, th, packed)
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -473,14 +487,14 @@ elif page == t("nav_new_plan"):
         _eff_bar(efficiency)
 
         st.plotly_chart(
-            viz.build_figure(tl, tw, th, packed, unpacked, efficiency, t=t),
+            _viz_figure(tl, tw, th, packed, unpacked, efficiency, t),
             use_container_width=True,
         )
 
         if packed:
             st.subheader(t("top_view_title"))
             st.plotly_chart(
-                viz.build_2d_layers(tl, tw, th, packed, t=t),
+                _viz_2d(tl, tw, th, packed, t),
                 use_container_width=True,
             )
 
@@ -586,17 +600,17 @@ elif page == t("nav_history"):
 
                 if packed:
                     st.plotly_chart(
-                        viz.build_figure(
+                        _viz_figure(
                             full["truck_length"], full["truck_width"], full["truck_height"],
-                            packed, unpacked, full["efficiency"], t=t,
+                            packed, unpacked, full["efficiency"], t,
                         ),
                         use_container_width=True,
                     )
                     st.subheader(t("top_view_title"))
                     st.plotly_chart(
-                        viz.build_2d_layers(
+                        _viz_2d(
                             full["truck_length"], full["truck_width"], full["truck_height"],
-                            packed, t=t,
+                            packed, t,
                         ),
                         use_container_width=True,
                     )
