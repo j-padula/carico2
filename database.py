@@ -28,7 +28,6 @@ def init_db():
     conn = get_connection()
     c = conn.cursor()
 
-    # ── packages table ────────────────────────────────────────────────────────
     c.execute("""
         CREATE TABLE IF NOT EXISTS packages (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,20 +41,21 @@ def init_db():
             created_at  TEXT    NOT NULL,
             category    TEXT    DEFAULT '',
             tags        TEXT    DEFAULT '',
-            stackable   INTEGER DEFAULT 1
+            stackable   INTEGER DEFAULT 1,
+            rotatable   INTEGER DEFAULT 1
         )
     """)
 
-    # Migrations for existing databases that lack new columns
+    # ── Auto-migrations for existing databases ────────────────────────────────
     for col, ddl in [
         ("category",  "TEXT    DEFAULT ''"),
         ("tags",      "TEXT    DEFAULT ''"),
         ("stackable", "INTEGER DEFAULT 1"),
+        ("rotatable", "INTEGER DEFAULT 1"),
     ]:
         if not _column_exists(conn, "packages", col):
             c.execute(f"ALTER TABLE packages ADD COLUMN {col} {ddl}")
 
-    # ── loading_plans table ───────────────────────────────────────────────────
     c.execute("""
         CREATE TABLE IF NOT EXISTS loading_plans (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,7 +83,6 @@ def init_db():
 # ── Category helpers ───────────────────────────────────────────────────────────
 
 def get_categories():
-    """Return sorted list of all distinct non-empty categories."""
     conn = get_connection()
     rows = conn.execute(
         "SELECT DISTINCT category FROM packages WHERE category != '' ORDER BY category"
@@ -96,7 +95,8 @@ def get_categories():
 
 def add_package(name, length, width, height,
                 weight=0, description="",
-                category="", tags="", stackable=True):
+                category="", tags="",
+                stackable=True, rotatable=True):
     conn = get_connection()
     c = conn.cursor()
     used  = [r["color"] for r in c.execute("SELECT color FROM packages").fetchall()]
@@ -104,11 +104,13 @@ def add_package(name, length, width, height,
                  COLORS[len(used) % len(COLORS)])
     c.execute(
         "INSERT INTO packages "
-        "(name,length,width,height,weight,description,color,created_at,category,tags,stackable) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "(name,length,width,height,weight,description,color,created_at,"
+        " category,tags,stackable,rotatable) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (name, length, width, height, weight, description, color,
          datetime.now().isoformat(),
-         category.strip(), tags.strip(), int(stackable))
+         category.strip(), tags.strip(),
+         int(stackable), int(rotatable))
     )
     conn.commit()
     conn.close()
@@ -118,7 +120,8 @@ def get_packages(category_filter=None):
     conn = get_connection()
     if category_filter and category_filter != "Todas":
         rows = conn.execute(
-            "SELECT * FROM packages WHERE category=? ORDER BY name", (category_filter,)
+            "SELECT * FROM packages WHERE category=? ORDER BY name",
+            (category_filter,)
         ).fetchall()
     else:
         rows = conn.execute("SELECT * FROM packages ORDER BY name").fetchall()
@@ -127,15 +130,18 @@ def get_packages(category_filter=None):
 
 
 def update_package(pkg_id, name, length, width, height,
-                   weight, description, category="", tags="", stackable=True):
+                   weight, description,
+                   category="", tags="",
+                   stackable=True, rotatable=True):
     conn = get_connection()
     conn.execute(
         "UPDATE packages "
         "SET name=?,length=?,width=?,height=?,weight=?,description=?,"
-        "    category=?,tags=?,stackable=? "
+        "    category=?,tags=?,stackable=?,rotatable=? "
         "WHERE id=?",
         (name, length, width, height, weight, description,
-         category.strip(), tags.strip(), int(stackable), pkg_id)
+         category.strip(), tags.strip(),
+         int(stackable), int(rotatable), pkg_id)
     )
     conn.commit()
     conn.close()
@@ -168,10 +174,8 @@ def save_plan(name, truck_l, truck_w, truck_h, items,
          truck_l, truck_w, truck_h,
          round(total_vol, 3), round(used_vol, 3), round(efficiency, 2),
          len(packed_boxes), len(unpacked_boxes),
-         json.dumps(items),
-         json.dumps(packed_boxes),
-         json.dumps(unpacked_boxes),
-         notes)
+         json.dumps(items), json.dumps(packed_boxes),
+         json.dumps(unpacked_boxes), notes)
     )
     conn.commit()
     conn.close()
