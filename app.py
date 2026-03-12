@@ -114,11 +114,14 @@ with st.sidebar:
     all_plans = db.get_plans()
     st.metric("Bultos registrados", len(all_pkgs))
     st.metric("Planes guardados",   len(all_plans))
-    cats = db.get_categories()
-    if cats:
-        st.markdown("**Categorías**")
-        for c in cats:
-            st.markdown(f'<span class="cat-pill">{c}</span>', unsafe_allow_html=True)
+    try:
+        cats = db.get_categories()
+        if cats:
+            st.markdown("**Categorías**")
+            for c in cats:
+                st.markdown(f'<span class="cat-pill">{c}</span>', unsafe_allow_html=True)
+    except Exception:
+        pass
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -136,7 +139,7 @@ if page == "📦 Gestión de Bultos":
                 new_name = st.text_input("Nombre del bulto *", placeholder="Ej: Caja grande")
                 new_desc = st.text_input("Descripción", placeholder="Opcional")
             with fa2:
-                existing_cats = [""] + db.get_categories()
+                existing_cats = [""] + (db.get_categories() if hasattr(db, "get_categories") else [])
                 cat_select = st.selectbox("Categoría existente", existing_cats,
                                           format_func=lambda x: "— sin categoría —" if x == "" else x)
                 cat_new    = st.text_input("…o escribí una nueva categoría",
@@ -172,7 +175,7 @@ if page == "📦 Gestión de Bultos":
     st.markdown("---")
 
     # ── Filter by category ────────────────────────────────────────────────────
-    cats = db.get_categories()
+    cats = (db.get_categories() if hasattr(db, "get_categories") else [])
     filter_opts = ["Todas"] + cats
     col_filter, col_search = st.columns([1, 2])
     with col_filter:
@@ -252,7 +255,7 @@ if page == "📦 Gestión de Bultos":
                             e_name = st.text_input("Nombre", value=pkg["name"])
                             e_desc = st.text_input("Descripción", value=pkg.get("description",""))
                         with ef2:
-                            existing_cats_e = [""] + db.get_categories()
+                            existing_cats_e = [""] + (db.get_categories() if hasattr(db, "get_categories") else [])
                             e_cat_idx = (existing_cats_e.index(pkg.get("category",""))
                                          if pkg.get("category","") in existing_cats_e else 0)
                             e_cat_sel = st.selectbox("Categoría", existing_cats_e,
@@ -337,7 +340,7 @@ elif page == "🗂️ Nuevo Plan de Carga":
     st.subheader("3️⃣ Selección de bultos")
 
     # Optional category filter for the plan selector
-    cats_for_plan = ["Todas"] + db.get_categories()
+    cats_for_plan = ["Todas"] + (db.get_categories() if hasattr(db, "get_categories") else [])
     plan_cat_filter = st.selectbox("Filtrar bultos por categoría", cats_for_plan, key="plan_cat_filter")
     packages_for_plan = db.get_packages(
         category_filter=plan_cat_filter if plan_cat_filter != "Todas" else None
