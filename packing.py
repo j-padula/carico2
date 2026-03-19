@@ -163,21 +163,48 @@ def _contact(px,py,pz,rl,rw,h, truck_l,truck_w,truck_h, placed):
     return c
 
 
-# ── Wall-first score ──────────────────────────────────────────────────────────
+# ── True wall-completion score ────────────────────────────────────────────────
+#
+# Two-phase scoring:
+#
+#   Phase 0 – WITHIN CURRENT WALL: the box fits entirely within the X depth
+#             already occupied by placed boxes.  These positions are always
+#             preferred — they fill gaps beside/above existing cargo.
+#             Sorted by: Z asc, Y asc, -contact (tightest fit first).
+#
+#   Phase 1 – ADVANCES THE WALL: the box would push the frontier forward.
+#             Only chosen when nothing fits in phase 0.
+#             Sorted by: advance amount asc (least X advance), then Z, Y.
+#
+# This guarantees the algorithm fills the current cross-section completely
+# before opening a new slice — the true "pared" behaviour.
 
-def _score(px,py,pz,rl,rw,h, truck_l,truck_w,truck_h,
+def _wall_x(placed) -> float:
+    """Current X frontier = max right edge of all placed boxes."""
+    return max((p.x + p.placed_l for p in placed), default=0.0)
+
+
+def _score(px, py, pz, rl, rw, h, truck_l, truck_w, truck_h,
            placed, box, prefer_columns):
-    """
-    (X_rounded, Z, Y_rounded, -contact)
-    → fill low X (don't advance length), then fill Z, then fill Y.
-    """
-    ca = _contact(px,py,pz,rl,rw,h, truck_l,truck_w,truck_h, placed)
+
+    ca = _contact(px, py, pz, rl, rw, h, truck_l, truck_w, truck_h, placed)
+
     if prefer_columns and pz > EPS:
         for p in placed:
-            if p.package_id == box.package_id and abs(p.z+p.placed_h-pz) < EPS:
-                ca += (_ov1d(px,px+rl,p.x,p.x+p.placed_l) *
-                       _ov1d(py,py+rw,p.y,p.y+p.placed_w) * 3.0)
-    return (round(px,3), pz, round(py,3), -ca)
+            if p.package_id == box.package_id and abs(p.z + p.placed_h - pz) < EPS:
+                ca += (_ov1d(px, px+rl, p.x, p.x+p.placed_l) *
+                       _ov1d(py, py+rw, p.y, p.y+p.placed_w) * 3.0)
+
+    wx = _wall_x(placed)
+    new_right = px + rl
+
+    if new_right <= wx + EPS:
+        # Phase 0: fills within current wall — strongly preferred
+        return (0, round(pz, 3), round(py, 3), -ca)
+    else:
+        # Phase 1: advances wall — penalised; prefer minimum advance
+        advance = round(new_right - wx, 3)
+        return (1, advance, round(pz, 3), round(py, 3), -ca)
 
 
 # ── EP generation ─────────────────────────────────────────────────────────────
