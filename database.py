@@ -6,17 +6,13 @@ from pathlib import Path
 DB_PATH = Path("truck_loader.db")
 
 COLORS = [
-    "#E63946", "#457B9D", "#2A9D8F", "#E9C46A", "#F4A261",
-    "#264653", "#A8DADC", "#6D6875", "#B5838D", "#FFAFCC",
-    "#80B918", "#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4",
-    "#FFEAA7", "#DDA0DD", "#98D8C8", "#F7DC6F", "#BB8FCE"
+    "#E63946","#457B9D","#2A9D8F","#E9C46A","#F4A261",
+    "#264653","#A8DADC","#6D6875","#B5838D","#FFAFCC",
+    "#80B918","#FF6B6B","#4ECDC4","#45B7D1","#96CEB4",
+    "#FFEAA7","#DDA0DD","#98D8C8","#F7DC6F","#BB8FCE"
 ]
 
-# position_rule values
-POS_ANY       = "any"        # no restriction
-POS_FLOOR     = "floor_only" # only on the truck floor (z=0)
-POS_TOP       = "top_only"   # only on top of other boxes (z>0)
-POS_NO_FLOOR  = "no_floor"   # must not be on the floor (z>0), same practical effect as top_only
+DEFAULT_ORIENT_RULES = {"A": "any", "B": "any"}   # A = original, B = rotated 90°
 
 
 def get_connection():
@@ -25,14 +21,15 @@ def get_connection():
     return conn
 
 
-def _column_exists(conn, table, column):
-    return column in [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+def _col(conn, table, col):
+    return col in [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
 
 
 def init_db():
     conn = get_connection()
     c = conn.cursor()
 
+    # ── packages ──────────────────────────────────────────────────────────────
     c.execute("""
         CREATE TABLE IF NOT EXISTS packages (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,10 +46,10 @@ def init_db():
             stackable     INTEGER DEFAULT 1,
             rotatable     INTEGER DEFAULT 1,
             position_rule TEXT    DEFAULT 'any',
-            load_priority INTEGER DEFAULT 5
+            load_priority INTEGER DEFAULT 5,
+            orient_rules  TEXT    DEFAULT '{"A":"any","B":"any"}'
         )
     """)
-
     for col, ddl in [
         ("category",      "TEXT    DEFAULT ''"),
         ("tags",          "TEXT    DEFAULT ''"),
@@ -60,10 +57,24 @@ def init_db():
         ("rotatable",     "INTEGER DEFAULT 1"),
         ("position_rule", "TEXT    DEFAULT 'any'"),
         ("load_priority", "INTEGER DEFAULT 5"),
+        ("orient_rules",  "TEXT    DEFAULT '{\"A\":\"any\",\"B\":\"any\"}'"),
     ]:
-        if not _column_exists(conn, "packages", col):
+        if not _col(conn, "packages", col):
             c.execute(f"ALTER TABLE packages ADD COLUMN {col} {ddl}")
 
+    # ── trucks ────────────────────────────────────────────────────────────────
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS trucks (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT NOT NULL,
+            length     REAL NOT NULL,
+            width      REAL NOT NULL,
+            height     REAL NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
+
+    # ── loading_plans ─────────────────────────────────────────────────────────
     c.execute("""
         CREATE TABLE IF NOT EXISTS loading_plans (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,7 +100,6 @@ def init_db():
 
 
 # ── Category helpers ───────────────────────────────────────────────────────────
-
 def get_categories():
     conn = get_connection()
     rows = conn.execute(
@@ -100,27 +110,29 @@ def get_categories():
 
 
 # ── Packages ──────────────────────────────────────────────────────────────────
-
 def add_package(name, length, width, height,
                 weight=0, description="",
                 category="", tags="",
                 stackable=True, rotatable=True,
-                position_rule="any", load_priority=5):
+                position_rule="any", load_priority=5,
+                orient_rules=None):
+    if orient_rules is None:
+        orient_rules = DEFAULT_ORIENT_RULES
     conn = get_connection()
     c = conn.cursor()
     used  = [r["color"] for r in c.execute("SELECT color FROM packages").fetchall()]
-    color = next((col for col in COLORS if col not in used),
-                 COLORS[len(used) % len(COLORS)])
+    color = next((col for col in COLORS if col not in used), COLORS[len(used) % len(COLORS)])
     c.execute(
         "INSERT INTO packages "
         "(name,length,width,height,weight,description,color,created_at,"
-        " category,tags,stackable,rotatable,position_rule,load_priority) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " category,tags,stackable,rotatable,position_rule,load_priority,orient_rules) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (name, length, width, height, weight, description, color,
          datetime.now().isoformat(),
          category.strip(), tags.strip(),
          int(stackable), int(rotatable),
-         position_rule, int(load_priority))
+         position_rule, int(load_priority),
+         json.dumps(orient_rules))
     )
     conn.commit()
     conn.close()
@@ -130,31 +142,42 @@ def get_packages(category_filter=None):
     conn = get_connection()
     if category_filter and category_filter != "Todas":
         rows = conn.execute(
-            "SELECT * FROM packages WHERE category=? ORDER BY name",
-            (category_filter,)
+            "SELECT * FROM packages WHERE category=? ORDER BY name", (category_filter,)
         ).fetchall()
     else:
         rows = conn.execute("SELECT * FROM packages ORDER BY name").fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    result = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["orient_rules"] = json.loads(d.get("orient_rules") or '{"A":"any","B":"any"}')
+        except Exception:
+            d["orient_rules"] = DEFAULT_ORIENT_RULES.copy()
+        result.append(d)
+    return result
 
 
 def update_package(pkg_id, name, length, width, height,
                    weight, description,
                    category="", tags="",
                    stackable=True, rotatable=True,
-                   position_rule="any", load_priority=5):
+                   position_rule="any", load_priority=5,
+                   orient_rules=None):
+    if orient_rules is None:
+        orient_rules = DEFAULT_ORIENT_RULES
     conn = get_connection()
     conn.execute(
         "UPDATE packages "
         "SET name=?,length=?,width=?,height=?,weight=?,description=?,"
         "    category=?,tags=?,stackable=?,rotatable=?,"
-        "    position_rule=?,load_priority=? "
+        "    position_rule=?,load_priority=?,orient_rules=? "
         "WHERE id=?",
         (name, length, width, height, weight, description,
          category.strip(), tags.strip(),
          int(stackable), int(rotatable),
-         position_rule, int(load_priority), pkg_id)
+         position_rule, int(load_priority),
+         json.dumps(orient_rules), pkg_id)
     )
     conn.commit()
     conn.close()
@@ -167,14 +190,38 @@ def delete_package(pkg_id):
     conn.close()
 
 
-# ── Loading Plans ─────────────────────────────────────────────────────────────
+# ── Trucks ────────────────────────────────────────────────────────────────────
+def add_truck(name, length, width, height):
+    """Dimensions in meters."""
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO trucks (name,length,width,height,created_at) VALUES (?,?,?,?,?)",
+        (name.strip(), length, width, height, datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
 
+
+def get_trucks():
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM trucks ORDER BY name").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def delete_truck(truck_id):
+    conn = get_connection()
+    conn.execute("DELETE FROM trucks WHERE id=?", (truck_id,))
+    conn.commit()
+    conn.close()
+
+
+# ── Loading Plans ─────────────────────────────────────────────────────────────
 def save_plan(name, truck_l, truck_w, truck_h, items,
               packed_boxes, unpacked_boxes, notes=""):
     total_vol  = truck_l * truck_w * truck_h
     used_vol   = sum(b["placed_l"]*b["placed_w"]*b["placed_h"] for b in packed_boxes)
     efficiency = (used_vol / total_vol * 100) if total_vol > 0 else 0
-
     conn = get_connection()
     conn.execute(
         """INSERT INTO loading_plans
@@ -185,7 +232,7 @@ def save_plan(name, truck_l, truck_w, truck_h, items,
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (name, datetime.now().strftime("%Y-%m-%d %H:%M"),
          truck_l, truck_w, truck_h,
-         round(total_vol,3), round(used_vol,3), round(efficiency,2),
+         round(total_vol,4), round(used_vol,4), round(efficiency,2),
          len(packed_boxes), len(unpacked_boxes),
          json.dumps(items), json.dumps(packed_boxes),
          json.dumps(unpacked_boxes), notes)
@@ -196,18 +243,14 @@ def save_plan(name, truck_l, truck_w, truck_h, items,
 
 def get_plans():
     conn = get_connection()
-    rows = conn.execute(
-        "SELECT * FROM loading_plans ORDER BY created_at DESC"
-    ).fetchall()
+    rows = conn.execute("SELECT * FROM loading_plans ORDER BY created_at DESC").fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
 def get_plan(plan_id):
     conn = get_connection()
-    row = conn.execute(
-        "SELECT * FROM loading_plans WHERE id=?", (plan_id,)
-    ).fetchone()
+    row = conn.execute("SELECT * FROM loading_plans WHERE id=?", (plan_id,)).fetchone()
     conn.close()
     if row:
         plan = dict(row)

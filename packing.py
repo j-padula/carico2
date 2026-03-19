@@ -1,36 +1,26 @@
 """
-3D Bin Packing – Extreme Point + Contact Maximisation + PackVol-style rules
+3D Bin Packing – Extreme Point, Wall-First scoring, Per-Orientation rules.
 
-Per-box rules (stored in DB, passed via items dict):
-  stackable     – False → nothing may rest on top of this box
-  rotatable     – False → only original L×W orientation tried
-  position_rule – "any"        : no restriction
-                  "floor_only" : must sit on truck floor (z ≈ 0)
-                  "top_only"   : must rest on top of another box (z > 0)
-                  "no_floor"   : same as top_only
-  load_priority – 1 (placed last / deepest) … 10 (placed first / near door)
+Per-orientation rules (orient_rules dict on each box):
+  "A" → original orientation (length × width)
+  "B" → rotated 90°        (width  × length)
 
-Plan-level options (passed to run_packing):
-  loading_dir    – "front_back" : fill from x=0 → truck_l (default)
-                   "back_front" : fill from x=truck_l → 0
-                   Implementation: always pack front_back internally,
-                   then MIRROR all x coords if back_front requested.
-                   This is exact and avoids EP-seed issues.
-  prefer_columns – True: reward stacking same package_id in columns
+  Each value: "disabled" | "any" | "floor_only" | "top_only" | "no_floor"
 
-Algorithm: dual-pass (original orientation first vs rotated first) keeping
-the pass that fits more boxes.  Height is always the Z axis (upright).
+Plan-level options:
+  loading_dir    – "front_back" | "back_front"
+  prefer_columns – bool
+
+Scoring: wall-first (fill width/height before advancing in length).
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import List, Tuple
+from dataclasses import dataclass, field
+from typing import List, Tuple, Dict
 import copy
 
 EPS = 1e-9
 
-
-# ── Data class ────────────────────────────────────────────────────────────────
 
 @dataclass
 class PackBox:
@@ -44,8 +34,8 @@ class PackBox:
     color:         str
     stackable:     bool
     rotatable:     bool
-    position_rule: str   # "any" | "floor_only" | "top_only" | "no_floor"
-    load_priority: int   # 1–10
+    orient_rules:  Dict[str, str]   # {"A": rule, "B": rule}
+    load_priority: int
 
     x: float = 0.0
     y: float = 0.0
@@ -58,11 +48,11 @@ class PackBox:
     def to_dict(self):
         return {
             "uid": self.uid, "package_id": self.package_id,
-            "name": self.name, "length": self.length,
-            "width": self.width, "height": self.height,
+            "name": self.name,
+            "length": self.length, "width": self.width, "height": self.height,
             "weight": self.weight, "color": self.color,
             "stackable": self.stackable, "rotatable": self.rotatable,
-            "position_rule": self.position_rule,
+            "orient_rules": self.orient_rules,
             "load_priority": self.load_priority,
             "x": self.x, "y": self.y, "z": self.z,
             "placed_l": self.placed_l, "placed_w": self.placed_w,
@@ -75,12 +65,23 @@ class PackBox:
         self.placed = False
 
 
-# ── Rotations ─────────────────────────────────────────────────────────────────
+# ── Orientations with per-rule ────────────────────────────────────────────────
 
-def _rotations(l, w, rotatable, prefer_rotated) -> List[Tuple[float, float]]:
-    if not rotatable or abs(l - w) < EPS:
-        return [(l, w)]
-    return [(w, l), (l, w)] if prefer_rotated else [(l, w), (w, l)]
+def _get_orientations(box: PackBox, prefer_rotated: bool) -> List[Tuple[float, float, str]]:
+    """
+    Returns list of (rl, rw, rule) to try for this box.
+    Disabled orientations are excluded.
+    prefer_rotated=True: try B before A.
+    """
+    l, w = box.length, box.width
+    rules = box.orient_rules
+
+    a = (l, w, rules.get("A", "any"))
+    b = (w, l, rules.get("B", "any")) if box.rotatable and abs(l - w) > EPS else None
+
+    candidates = [b, a] if prefer_rotated else [a, b]
+    return [(rl, rw, rule) for (rl, rw, rule) in candidates
+            if (rl, rw, rule) is not None and rule != "disabled"]
 
 
 # ── Geometry ──────────────────────────────────────────────────────────────────
@@ -97,8 +98,7 @@ def _overlaps_xy(ax,ay,al,aw, bx,by,bl,bw):
     return (ax+al>bx+EPS and bx+bl>ax+EPS and
             ay+aw>by+EPS and by+bw>ay+EPS)
 
-def _has_support(px,py,pz,rl,rw, placed) -> bool:
-    """True if box footprint is on the floor or resting on a placed box."""
+def _has_support(px,py,pz,rl,rw, placed):
     if pz < EPS:
         return True
     for p in placed:
@@ -110,23 +110,22 @@ def _has_support(px,py,pz,rl,rw, placed) -> bool:
 
 # ── Position-rule check ───────────────────────────────────────────────────────
 
-def _position_ok(rule, px,py,pz,rl,rw,h, placed) -> bool:
+def _position_ok(rule, px, py, pz, rl, rw, placed):
     if rule == "floor_only":
         return pz < EPS
     if rule in ("top_only", "no_floor"):
         return pz > EPS and _has_support(px,py,pz,rl,rw, placed)
-    return True
+    return True   # "any"
 
 
 # ── Placement validity ────────────────────────────────────────────────────────
 
 def _can_place(rl,rw,h, px,py,pz, truck_l,truck_w,truck_h,
-               placed, box) -> bool:
+               placed, rule, stackable) -> bool:
     if px+rl > truck_l+EPS: return False
     if py+rw > truck_w+EPS: return False
     if pz+h  > truck_h+EPS: return False
-    if not _position_ok(box.position_rule,px,py,pz,rl,rw,h, placed):
-        return False
+    if not _position_ok(rule, px,py,pz,rl,rw, placed): return False
     for p in placed:
         if _overlaps_3d(px,py,pz,rl,rw,h,
                         p.x,p.y,p.z,p.placed_l,p.placed_w,p.placed_h):
@@ -138,13 +137,13 @@ def _can_place(rl,rw,h, px,py,pz, truck_l,truck_w,truck_h,
     return True
 
 
-# ── Contact area (higher = better) ───────────────────────────────────────────
+# ── Contact area ──────────────────────────────────────────────────────────────
 
-def _contact(px,py,pz,rl,rw,h, truck_l,truck_w,truck_h, placed) -> float:
+def _contact(px,py,pz,rl,rw,h, truck_l,truck_w,truck_h, placed):
     c = 0.0
-    if pz          < EPS: c += rl*rw
-    if px          < EPS: c += rw*h
-    if py          < EPS: c += rl*h
+    if pz < EPS:              c += rl*rw
+    if px < EPS:              c += rw*h
+    if py < EPS:              c += rl*h
     if abs(px+rl-truck_l)<EPS: c += rw*h
     if abs(py+rw-truck_w)<EPS: c += rl*h
     for p in placed:
@@ -164,32 +163,21 @@ def _contact(px,py,pz,rl,rw,h, truck_l,truck_w,truck_h, placed) -> float:
     return c
 
 
-# ── Score tuple (for min()) – WALL-FIRST approach ────────────────────────────
-#
-# Priority:
-#   1. Minimum X  → never advance in length until current "wall" is full
-#   2. Minimum Z  → fill floor before stacking
-#   3. Minimum Y  → fill width left-to-right
-#   4. Max contact → tiebreaker for identical positions
-#
-# Removing _waste entirely: that function was rewarding rotations that divide
-# remaining space cleanly, which caused the staircase/gap-filling pattern.
-# Now the algorithm only rotates if both orientations share the same X slot;
-# it never rotates just to plug a lengthwise gap.
+# ── Wall-first score ──────────────────────────────────────────────────────────
 
-def _score(px, py, pz, rl, rw, h, truck_l, truck_w, truck_h,
-           placed, box, prefer_columns) -> tuple:
-
-    ca = _contact(px, py, pz, rl, rw, h, truck_l, truck_w, truck_h, placed)
-
+def _score(px,py,pz,rl,rw,h, truck_l,truck_w,truck_h,
+           placed, box, prefer_columns):
+    """
+    (X_rounded, Z, Y_rounded, -contact)
+    → fill low X (don't advance length), then fill Z, then fill Y.
+    """
+    ca = _contact(px,py,pz,rl,rw,h, truck_l,truck_w,truck_h, placed)
     if prefer_columns and pz > EPS:
         for p in placed:
-            if p.package_id == box.package_id and abs(p.z + p.placed_h - pz) < EPS:
-                ca += (_ov1d(px, px+rl, p.x, p.x+p.placed_l) *
-                       _ov1d(py, py+rw, p.y, p.y+p.placed_w) * 3.0)
-
-    # Round X to 3 decimal places so floating-point noise doesn't break grouping
-    return (round(px, 3), pz, round(py, 3), -ca)
+            if p.package_id == box.package_id and abs(p.z+p.placed_h-pz) < EPS:
+                ca += (_ov1d(px,px+rl,p.x,p.x+p.placed_l) *
+                       _ov1d(py,py+rw,p.y,p.y+p.placed_w) * 3.0)
+    return (round(px,3), pz, round(py,3), -ca)
 
 
 # ── EP generation ─────────────────────────────────────────────────────────────
@@ -207,19 +195,15 @@ def _add_eps(eps:set, px,py,pz,rl,rw,h, truck_l,truck_w,truck_h, placed):
             eps.add((x,y,z))
 
 
-# ── Single-pass packer (always fills front→back, i.e. from x=0) ──────────────
+# ── Single-pass packer ────────────────────────────────────────────────────────
 
 def _pack_once(truck_l,truck_w,truck_h, boxes,
-               prefer_rotated, prefer_columns) -> Tuple[list,list]:
-
+               prefer_rotated, prefer_columns):
     boxes = [copy.copy(b) for b in boxes]
     for b in boxes: b.reset()
 
-    # Higher priority placed first (will end up at low x = near x=0).
-    # After optional X-mirror, high-priority items end up near the door.
     order = sorted(boxes,
-                   key=lambda b: (b.load_priority,
-                                  b.length*b.width*b.height),
+                   key=lambda b: (b.load_priority, b.length*b.width*b.height),
                    reverse=True)
 
     placed = []
@@ -231,12 +215,15 @@ def _pack_once(truck_l,truck_w,truck_h, boxes,
         best_pos   = None
         best_rot   = None
 
-        rots = _rotations(box.length,box.width,box.rotatable,prefer_rotated)
+        orientations = _get_orientations(box, prefer_rotated)
+        if not orientations:
+            unpacked.append(box)
+            continue
 
         for (px,py,pz) in list(eps):
-            for (rl,rw) in rots:
+            for (rl,rw,rule) in orientations:
                 if _can_place(rl,rw,box.height,px,py,pz,
-                              truck_l,truck_w,truck_h,placed,box):
+                              truck_l,truck_w,truck_h,placed,rule,box.stackable):
                     sc = _score(px,py,pz,rl,rw,box.height,
                                 truck_l,truck_w,truck_h,
                                 placed,box,prefer_columns)
@@ -261,57 +248,45 @@ def _pack_once(truck_l,truck_w,truck_h, boxes,
     return placed, unpacked
 
 
-# ── X-mirror transform ────────────────────────────────────────────────────────
+# ── X-mirror for back_front ───────────────────────────────────────────────────
 
 def _mirror_x(placed, truck_l):
-    """
-    Reflect all placed boxes along the X axis:
-        x_real = truck_l - x_packed - placed_l
-    Used to convert a front→back result into a back→front result.
-    High-priority boxes (placed first, near x=0) end up near x=truck_l
-    (the door/rear of the truck) — exactly what we want for back_front.
-    Non-overlap and upright constraints are preserved by the reflection.
-    """
     for b in placed:
         b.x = truck_l - b.x - b.placed_l
 
 
-# ── Dual-pass entry ───────────────────────────────────────────────────────────
+# ── Dual-pass ────────────────────────────────────────────────────────────────
 
 def pack(truck_l,truck_w,truck_h, boxes,
          loading_dir="front_back", prefer_columns=False):
 
-    placed_a,unpacked_a = _pack_once(truck_l,truck_w,truck_h,boxes,
-                                     False,prefer_columns)
-    placed_b,unpacked_b = _pack_once(truck_l,truck_w,truck_h,boxes,
-                                     True, prefer_columns)
+    pa,ua = _pack_once(truck_l,truck_w,truck_h,boxes,False,prefer_columns)
+    pb,ub = _pack_once(truck_l,truck_w,truck_h,boxes,True, prefer_columns)
 
-    vol_a = sum(b.placed_l*b.placed_w*b.placed_h for b in placed_a)
-    vol_b = sum(b.placed_l*b.placed_w*b.placed_h for b in placed_b)
+    va = sum(b.placed_l*b.placed_w*b.placed_h for b in pa)
+    vb = sum(b.placed_l*b.placed_w*b.placed_h for b in pb)
 
-    if len(placed_b) > len(placed_a):
-        best_placed, best_unpacked = placed_b, unpacked_b
-    elif len(placed_a) > len(placed_b):
-        best_placed, best_unpacked = placed_a, unpacked_a
+    if len(pb) > len(pa):
+        best, ubest = pb, ub
+    elif len(pa) > len(pb):
+        best, ubest = pa, ua
     else:
-        best_placed, best_unpacked = (
-            (placed_b, unpacked_b) if vol_b >= vol_a else (placed_a, unpacked_a)
-        )
+        best, ubest = (pb,ub) if vb>=va else (pa,ua)
 
     if loading_dir == "back_front":
-        _mirror_x(best_placed, truck_l)
+        _mirror_x(best, truck_l)
 
-    return best_placed, best_unpacked
+    return best, ubest
 
 
-# ── Public interface ──────────────────────────────────────────────────────────
+# ── Public ────────────────────────────────────────────────────────────────────
 
 def run_packing(truck_l, truck_w, truck_h, items,
-                loading_dir="front_back",
-                prefer_columns=False):
+                loading_dir="front_back", prefer_columns=False):
 
     boxes = []
     for item in items:
+        orient_rules = item.get("orient_rules") or {"A":"any","B":"any"}
         for i in range(item["quantity"]):
             boxes.append(PackBox(
                 uid           = f"pkg{item['package_id']}_{i}",
@@ -324,7 +299,7 @@ def run_packing(truck_l, truck_w, truck_h, items,
                 color         = item["color"],
                 stackable     = item.get("stackable", True),
                 rotatable     = item.get("rotatable", True),
-                position_rule = item.get("position_rule", "any"),
+                orient_rules  = orient_rules,
                 load_priority = item.get("load_priority", 5),
             ))
 
