@@ -13,16 +13,16 @@ import packing
 import visualization as viz
 from translations import get_t
 
-# ── DB compatibility: works with old database.py (no position_rule/load_priority)
-# and new database.py (with those params). Checked once at startup. ──────────
+# ── Compatibility wrappers: detect available params at startup ────────────────
+_ADD_PKG_PARAMS     = set(_inspect.signature(db.add_package).parameters)
+_UPD_PKG_PARAMS     = set(_inspect.signature(db.update_package).parameters)
 _RUN_PACKING_PARAMS = set(_inspect.signature(packing.run_packing).parameters)
 
 def _run_packing(truck_l, truck_w, truck_h, items, loading_dir, prefer_columns):
     kwargs = {}
-    if "loading_dir"     in _RUN_PACKING_PARAMS: kwargs["loading_dir"]     = loading_dir
-    if "prefer_columns"  in _RUN_PACKING_PARAMS: kwargs["prefer_columns"]  = prefer_columns
+    if "loading_dir"    in _RUN_PACKING_PARAMS: kwargs["loading_dir"]    = loading_dir
+    if "prefer_columns" in _RUN_PACKING_PARAMS: kwargs["prefer_columns"] = prefer_columns
     return packing.run_packing(truck_l, truck_w, truck_h, items, **kwargs)
-_UPD_PKG_PARAMS  = set(_inspect.signature(db.update_package).parameters)
 
 def _db_add_package(name, l, w, h, weight, desc,
                     category, tags, stackable, rotatable,
