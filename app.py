@@ -13,6 +13,39 @@ import packing
 import visualization as viz
 from translations import get_t
 
+# ── DB compatibility: works with old database.py (no position_rule/load_priority)
+# and new database.py (with those params). Checked once at startup. ──────────
+_RUN_PACKING_PARAMS = set(_inspect.signature(packing.run_packing).parameters)
+
+def _run_packing(truck_l, truck_w, truck_h, items, loading_dir, prefer_columns):
+    kwargs = {}
+    if "loading_dir"     in _RUN_PACKING_PARAMS: kwargs["loading_dir"]     = loading_dir
+    if "prefer_columns"  in _RUN_PACKING_PARAMS: kwargs["prefer_columns"]  = prefer_columns
+    return packing.run_packing(truck_l, truck_w, truck_h, items, **kwargs)
+_UPD_PKG_PARAMS  = set(_inspect.signature(db.update_package).parameters)
+
+def _db_add_package(name, l, w, h, weight, desc,
+                    category, tags, stackable, rotatable,
+                    position_rule, load_priority):
+    kwargs = dict(category=category, tags=tags,
+                  stackable=stackable, rotatable=rotatable)
+    if "position_rule" in _ADD_PKG_PARAMS:
+        kwargs["position_rule"] = position_rule
+    if "load_priority" in _ADD_PKG_PARAMS:
+        kwargs["load_priority"] = load_priority
+    db.add_package(name, l, w, h, weight, desc, **kwargs)
+
+def _db_update_package(pkg_id, name, l, w, h, weight, desc,
+                       category, tags, stackable, rotatable,
+                       position_rule, load_priority):
+    kwargs = dict(category=category, tags=tags,
+                  stackable=stackable, rotatable=rotatable)
+    if "position_rule" in _UPD_PKG_PARAMS:
+        kwargs["position_rule"] = position_rule
+    if "load_priority" in _UPD_PKG_PARAMS:
+        kwargs["load_priority"] = load_priority
+    db.update_package(pkg_id, name, l, w, h, weight, desc, **kwargs)
+
 st.set_page_config(
     page_title="Truck Loader", page_icon="🚛",
     layout="wide", initial_sidebar_state="expanded",
@@ -216,7 +249,7 @@ if page == t("nav_packages"):
                     st.error(t("msg_name_required"))
                 else:
                     final_cat = cat_new.strip() if cat_new.strip() else cat_sel
-                    db.add_package(
+                    _db_add_package(
                         new_name.strip(), new_l, new_w, new_h, new_weight, new_desc,
                         category=final_cat, tags=new_tags,
                         stackable=new_stack, rotatable=new_rot,
@@ -309,7 +342,7 @@ if page == t("nav_packages"):
                     with sb1:
                         if st.form_submit_button(t("btn_save"),use_container_width=True):
                             final_cat = e_cat_new.strip() if e_cat_new.strip() else e_cat_sel
-                            db.update_package(
+                            _db_update_package(
                                 pkg["id"],e_name,e_l,e_w,e_h,e_weight,e_desc,
                                 category=final_cat,tags=e_tags,
                                 stackable=e_stack,rotatable=e_rot,
@@ -456,7 +489,7 @@ elif page == t("nav_new_plan"):
             st.error(t("err_no_plan_name"))
         else:
             with st.spinner(t("spinner_packing")):
-                packed,unpacked,efficiency = packing.run_packing(
+                packed,unpacked,efficiency = _run_packing(
                     truck_l,truck_w,truck_h,selected_items,
                     loading_dir=loading_dir,
                     prefer_columns=prefer_columns,
