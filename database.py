@@ -12,6 +12,12 @@ COLORS = [
     "#FFEAA7", "#DDA0DD", "#98D8C8", "#F7DC6F", "#BB8FCE"
 ]
 
+# position_rule values
+POS_ANY       = "any"        # no restriction
+POS_FLOOR     = "floor_only" # only on the truck floor (z=0)
+POS_TOP       = "top_only"   # only on top of other boxes (z>0)
+POS_NO_FLOOR  = "no_floor"   # must not be on the floor (z>0), same practical effect as top_only
+
 
 def get_connection():
     conn = sqlite3.connect(DB_PATH)
@@ -20,8 +26,7 @@ def get_connection():
 
 
 def _column_exists(conn, table, column):
-    cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
-    return column in cols
+    return column in [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
 
 
 def init_db():
@@ -30,28 +35,31 @@ def init_db():
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS packages (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            name        TEXT    NOT NULL,
-            length      REAL    NOT NULL,
-            width       REAL    NOT NULL,
-            height      REAL    NOT NULL,
-            weight      REAL    DEFAULT 0,
-            description TEXT    DEFAULT '',
-            color       TEXT    NOT NULL,
-            created_at  TEXT    NOT NULL,
-            category    TEXT    DEFAULT '',
-            tags        TEXT    DEFAULT '',
-            stackable   INTEGER DEFAULT 1,
-            rotatable   INTEGER DEFAULT 1
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            name          TEXT    NOT NULL,
+            length        REAL    NOT NULL,
+            width         REAL    NOT NULL,
+            height        REAL    NOT NULL,
+            weight        REAL    DEFAULT 0,
+            description   TEXT    DEFAULT '',
+            color         TEXT    NOT NULL,
+            created_at    TEXT    NOT NULL,
+            category      TEXT    DEFAULT '',
+            tags          TEXT    DEFAULT '',
+            stackable     INTEGER DEFAULT 1,
+            rotatable     INTEGER DEFAULT 1,
+            position_rule TEXT    DEFAULT 'any',
+            load_priority INTEGER DEFAULT 5
         )
     """)
 
-    # ── Auto-migrations for existing databases ────────────────────────────────
     for col, ddl in [
-        ("category",  "TEXT    DEFAULT ''"),
-        ("tags",      "TEXT    DEFAULT ''"),
-        ("stackable", "INTEGER DEFAULT 1"),
-        ("rotatable", "INTEGER DEFAULT 1"),
+        ("category",      "TEXT    DEFAULT ''"),
+        ("tags",          "TEXT    DEFAULT ''"),
+        ("stackable",     "INTEGER DEFAULT 1"),
+        ("rotatable",     "INTEGER DEFAULT 1"),
+        ("position_rule", "TEXT    DEFAULT 'any'"),
+        ("load_priority", "INTEGER DEFAULT 5"),
     ]:
         if not _column_exists(conn, "packages", col):
             c.execute(f"ALTER TABLE packages ADD COLUMN {col} {ddl}")
@@ -85,7 +93,7 @@ def init_db():
 def get_categories():
     conn = get_connection()
     rows = conn.execute(
-        "SELECT DISTINCT category FROM packages WHERE category != '' ORDER BY category"
+        "SELECT DISTINCT category FROM packages WHERE category!='' ORDER BY category"
     ).fetchall()
     conn.close()
     return [r[0] for r in rows]
@@ -96,7 +104,8 @@ def get_categories():
 def add_package(name, length, width, height,
                 weight=0, description="",
                 category="", tags="",
-                stackable=True, rotatable=True):
+                stackable=True, rotatable=True,
+                position_rule="any", load_priority=5):
     conn = get_connection()
     c = conn.cursor()
     used  = [r["color"] for r in c.execute("SELECT color FROM packages").fetchall()]
@@ -105,12 +114,13 @@ def add_package(name, length, width, height,
     c.execute(
         "INSERT INTO packages "
         "(name,length,width,height,weight,description,color,created_at,"
-        " category,tags,stackable,rotatable) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        " category,tags,stackable,rotatable,position_rule,load_priority) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (name, length, width, height, weight, description, color,
          datetime.now().isoformat(),
          category.strip(), tags.strip(),
-         int(stackable), int(rotatable))
+         int(stackable), int(rotatable),
+         position_rule, int(load_priority))
     )
     conn.commit()
     conn.close()
@@ -132,16 +142,19 @@ def get_packages(category_filter=None):
 def update_package(pkg_id, name, length, width, height,
                    weight, description,
                    category="", tags="",
-                   stackable=True, rotatable=True):
+                   stackable=True, rotatable=True,
+                   position_rule="any", load_priority=5):
     conn = get_connection()
     conn.execute(
         "UPDATE packages "
         "SET name=?,length=?,width=?,height=?,weight=?,description=?,"
-        "    category=?,tags=?,stackable=?,rotatable=? "
+        "    category=?,tags=?,stackable=?,rotatable=?,"
+        "    position_rule=?,load_priority=? "
         "WHERE id=?",
         (name, length, width, height, weight, description,
          category.strip(), tags.strip(),
-         int(stackable), int(rotatable), pkg_id)
+         int(stackable), int(rotatable),
+         position_rule, int(load_priority), pkg_id)
     )
     conn.commit()
     conn.close()
@@ -159,7 +172,7 @@ def delete_package(pkg_id):
 def save_plan(name, truck_l, truck_w, truck_h, items,
               packed_boxes, unpacked_boxes, notes=""):
     total_vol  = truck_l * truck_w * truck_h
-    used_vol   = sum(b["placed_l"] * b["placed_w"] * b["placed_h"] for b in packed_boxes)
+    used_vol   = sum(b["placed_l"]*b["placed_w"]*b["placed_h"] for b in packed_boxes)
     efficiency = (used_vol / total_vol * 100) if total_vol > 0 else 0
 
     conn = get_connection()
@@ -172,7 +185,7 @@ def save_plan(name, truck_l, truck_w, truck_h, items,
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (name, datetime.now().strftime("%Y-%m-%d %H:%M"),
          truck_l, truck_w, truck_h,
-         round(total_vol, 3), round(used_vol, 3), round(efficiency, 2),
+         round(total_vol,3), round(used_vol,3), round(efficiency,2),
          len(packed_boxes), len(unpacked_boxes),
          json.dumps(items), json.dumps(packed_boxes),
          json.dumps(unpacked_boxes), notes)
