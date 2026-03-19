@@ -164,33 +164,32 @@ def _contact(px,py,pz,rl,rw,h, truck_l,truck_w,truck_h, placed) -> float:
     return c
 
 
-# ── Waste ratio (lower = better) ──────────────────────────────────────────────
+# ── Score tuple (for min()) – WALL-FIRST approach ────────────────────────────
+#
+# Priority:
+#   1. Minimum X  → never advance in length until current "wall" is full
+#   2. Minimum Z  → fill floor before stacking
+#   3. Minimum Y  → fill width left-to-right
+#   4. Max contact → tiebreaker for identical positions
+#
+# Removing _waste entirely: that function was rewarding rotations that divide
+# remaining space cleanly, which caused the staircase/gap-filling pattern.
+# Now the algorithm only rotates if both orientations share the same X slot;
+# it never rotates just to plug a lengthwise gap.
 
-def _waste(rl,rw, px,py, truck_l,truck_w) -> float:
-    rl,rw = max(rl,EPS),max(rw,EPS)
-    rem_l,rem_w = truck_l-px, truck_w-py
-    if rem_l<EPS or rem_w<EPS: return 1.0
-    return (rem_l%rl)/rem_l + (rem_w%rw)/rem_w
-
-
-# ── Score tuple (for min()) ───────────────────────────────────────────────────
-
-def _score(px,py,pz,rl,rw,h, truck_l,truck_w,truck_h,
+def _score(px, py, pz, rl, rw, h, truck_l, truck_w, truck_h,
            placed, box, prefer_columns) -> tuple:
-    """
-    (-contact_area, waste, pz, px, py)
-    contact_area gets a bonus if stacking same package_id (prefer_columns).
-    """
-    ca = _contact(px,py,pz,rl,rw,h, truck_l,truck_w,truck_h, placed)
+
+    ca = _contact(px, py, pz, rl, rw, h, truck_l, truck_w, truck_h, placed)
 
     if prefer_columns and pz > EPS:
         for p in placed:
-            if p.package_id == box.package_id and abs(p.z+p.placed_h-pz)<EPS:
-                ca += _ov1d(px,px+rl,p.x,p.x+p.placed_l) * \
-                      _ov1d(py,py+rw,p.y,p.y+p.placed_w) * 3.0
+            if p.package_id == box.package_id and abs(p.z + p.placed_h - pz) < EPS:
+                ca += (_ov1d(px, px+rl, p.x, p.x+p.placed_l) *
+                       _ov1d(py, py+rw, p.y, p.y+p.placed_w) * 3.0)
 
-    wt = _waste(rl,rw,px,py,truck_l,truck_w)
-    return (-ca, wt, pz, px, py)
+    # Round X to 3 decimal places so floating-point noise doesn't break grouping
+    return (round(px, 3), pz, round(py, 3), -ca)
 
 
 # ── EP generation ─────────────────────────────────────────────────────────────
